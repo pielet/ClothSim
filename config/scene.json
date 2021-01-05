@@ -1,0 +1,43 @@
+{
+	"time": 5.0,	// s
+	"dt": 0.001,
+
+	"parameters":[{
+		"mesh_type": 0,
+		"youngs_modulus": 2e+12,
+		"poisson_ratio": 0.3,
+		"density": 8.05,	// g/cm^2
+		"thickness": 0.1,	// cm
+		"bending_stiffness": 2e8,
+		"attachment_stiffness": 1e10,
+	}],
+
+	"cloths":[{
+		"mesh": "meshes/square2.obj",
+		"transform":{"rotate_angle": 0, "rotate_axis": [0, 1, 0],"translate": [0, 0, 0]},
+		"parameter": 0
+	}],
+
+	"nonlinear_solver":{
+		"type": 0, // 0 for Newton'd Method
+		"iterations": 5,
+		"ls_alpha": 0.03,
+		"ls_beta": 0.5
+	},
+
+	"linear_solver":{
+		"type": 0,	// 0 for direct solver, 1 for conjugate gradient
+		"iterations": 200,	// for CG only
+		"error": 1e-3
+	},
+
+	"handles":[
+		{"node": 0, "motion": 0}
+	],
+	"motions":[
+		{"start": 0, "end": 0}
+	],
+
+	"gravity": [0, -981, 0],
+	"damping": 0.005
+}

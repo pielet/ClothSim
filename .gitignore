@@ -1,0 +1,9 @@
+.vs/
+x64/
+*.pdb
+*.sln
+*.vcxproj
+*.vcxproj.user
+*.vcxproj.filters
+ClothSim/x64/
+ClothSimulatorApp/x64/
