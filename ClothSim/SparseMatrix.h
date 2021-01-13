@@ -7,38 +7,68 @@
 
 namespace cloth
 {
-	//template <typename ScalarType>
-	//struct Sparse
-	//{
-	//	ScalarType* m_value;
-	//	int* m_row_ptr;
-	//	int* m_col_idx;
-	//};
-
-	//! BSR format sparse matrix
-	template <typename ScalarType, int block_dim>
+	//! CSR format sparse matrix
 	class SparseMatrix
 	{
 	public:
 		SparseMatrix();
 		~SparseMatrix();
 		
+		//! Allocates and compactes memory
 		void initialize(int n_node, int n_face, int n_edge, const FaceIdx* faces, const EdgeIdx* edges);
-		void initialize(SparseMatrix<ScalarType, block_dim>& other);
+		
+		//! After initialize, this row_ptr and col_idx point to the same address as others'
+		void initialize(SparseMatrix& other);
 
-		CUDA_CALLABLE_MEMBER ScalarType* getValue();
+		//! Copies value vector from [other] to [*this]
+		void assign(SparseMatrix& other);
+
+		//! Adds diagonal matrix to block of *this with scaling a
+		void addInDiagonal(const Scalar* M, Scalar a = 1.f);
+
+		//! Gets inverse diagonal element
+		void invDiagonal(Scalar* out);
+
+		void setZero();
+
+		//! Access
+		int getn() const { return m_n; }
+		int getnnz() const { return m_nnz; }
+
+		CUDA_CALLABLE_MEMBER Scalar* getValue();
 		CUDA_CALLABLE_MEMBER int* getRowPtr();
 		CUDA_CALLABLE_MEMBER int* getColIdx();
+		CUDA_CALLABLE_MEMBER int* getDiagonalIdx();
 
 	private:
 		int m_n; //< num_nodes
 		int m_nnz; //< non-zero blocks
 
 		//! BSR stuff
-		ScalarType* m_value;
+		Scalar* m_value;
 		int* m_row_ptr;
 		int* m_col_idx;
+
+		int* m_diagonal_idx;
 	};
 
-	typedef SparseMatrix<Scalar, 3> SparseMat3x;
+	class SparseMatrixWrapper
+	{
+	public:
+		SparseMatrixWrapper(SparseMatrix& A);
+
+		//! Add [value] to the diagonal of (i, j)-th 3x3 block
+		CUDA_MEMBER void atomicAddIdentity(int i, int j, Scalar value);
+		//! Add [value] to the i-th block diagonal
+		CUDA_MEMBER void atomicAddInIndentity(int i, Scalar value);
+		//! Add mat to (i, j)-th 3x3 block
+		CUDA_MEMBER void atomicAddBlock(int i, int j, const Mat<Scalar, 3, 3>& mat);
+
+	private:
+		Scalar* m_value;
+		int* m_row_ptr;
+		int* m_col_idx;
+
+		int* m_diagonal_idx;
+	};
 }

@@ -14,11 +14,14 @@
 
 #include <string>
 #include <vector>
+#include <list>
 
 #include "Utils/MathDef.h"
 #include "Utils/json_loader.h"
+#include "Utils/Cublas.h"
 #include "Constraints.h"
 #include "SparseMatrix.h"
+#include "LinearSolver.h"
 
 namespace cloth
 {
@@ -63,8 +66,8 @@ namespace cloth
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 		//! Input models
-		Eigen::VecXx m_x;	// 3 * num_nodes
-		Eigen::VecXx m_uv;	// 2 * num_nodes
+		std::vector<Vec3x> m_x;
+		std::vector<Vec2x> m_uv;
 		std::vector<FaceIdx> m_faces_idx;
 		std::vector<EdgeIdx> m_edges_idx;
 
@@ -75,7 +78,21 @@ namespace cloth
 
 		int m_param_idx;
 
-		int initialize(Json::Value& json);
+		Cloth(Json::Value& json);
+	};
+
+	struct HandleGroup
+	{
+		std::vector<int> m_indices;
+		std::vector<Vec3x> m_init_targets;
+		std::vector<Vec3x> m_targets;
+
+		int m_num_nodes;
+		int m_cloth_idx;
+		int m_motion_idx;
+
+		HandleGroup(Json::Value& json, const std::vector<Cloth>& cloths);
+		void update(Scalar time);
 	};
 
 	class /*EXPORT*/ ClothSim
@@ -92,11 +109,11 @@ namespace cloth
 		//! Step once, returns false if the simulation finished.
 		bool step();
 
-		//! Accesses device data (for rendering)
+		//! Access device data (for rendering)
 		const FaceIdx* getFaceIndices(int i) const;
 		const Vec3x* getPositions() const;
 
-		//! Accesses counting
+		//! Access counting
 		int getOffset(int i) const;
 		int getNumCloths() const;
 		int getNumNodes(int i) const;
@@ -108,14 +125,21 @@ namespace cloth
 
 	private:
 		void loadScene(const std::string& fname);
-		void loadObj(Cloth& cloth_obj, Json::Value& json);
+
+		bool NewtonStep(Vec3x* v_next);
+		
+		void evaluateGradientAndHessian(const Vec3x* x);
+		Scalar evaluateObjectiveValue(int i, const Vec3x* v_next);
+		Scalar lineSearch(int i, const Vec3x* gradient_dir, const Vec3x* descent_dir);
 
 		//! Simulation parameters
 		Scalar m_time;
+		Scalar m_duration;
 		Scalar m_dt;
 
 		IntegrationMethod m_integration_method;
 		int m_integration_iterations;
+		bool m_enable_line_search;
 		Scalar m_ls_alpha;
 		Scalar m_ls_beta;
 
@@ -123,8 +147,10 @@ namespace cloth
 		int m_linear_solver_iterations;
 		Scalar m_linear_solver_error;
 
-		Eigen::Vec3x m_gravity;
-		Scalar m_damping_coefficient;
+		Vec3x m_gravity;
+		bool m_enable_damping;
+		Scalar m_damping_alpha;
+		Scalar m_damping_beta;
 
 		std::vector<MaterialParameters> m_materials;
 
@@ -135,20 +161,42 @@ namespace cloth
 		int m_num_total_nodes;
 		int m_num_total_faces;
 		int m_num_total_egdes;
+		int m_num_handles;
 
 		//! Device pointors
 		Vec3x* d_x;
 		Vec3x* d_v;
 		Vec2x* d_uv;
-
 		Scalar* d_mass;
 
 		std::vector<StretchingConstraints> m_stretching_constraints;
 		std::vector<BendingConstraints> m_bending_constraints;
+		std::vector<AttachmentConstraints> m_attachment_constraints;
 
-		std::vector<SparseMat3x> m_stiffness_matrix;
-		std::vector<SparseMat3x> m_A;
-		std::vector<SparseMat3x> m_init_A;	// bending
+		//! Animation
+		std::vector<HandleGroup> m_handle_groups;
+
+		//! Solver variables
+		Vec3x* d_u;
+		Vec3x* d_x_next;
+		Vec3x* d_v_next;
+		Vec3x* d_delta_v;
+		Vec3x* d_g;
+		Vec3x* d_Kv;
+		Scalar* d_out;
+
+		std::vector<SparseMatrix> m_stiffness_matrix;
+		std::vector<SparseMatrix> m_A;
+		std::vector<SparseMatrix> m_init_A;	// bending
+
+		std::vector<LinearSolver> m_solvers;
+		std::vector<CudaMvWrapper> m_mv;
+
+		std::vector<Scalar> m_step_size;
+		std::vector<bool> m_converged;
+
+		//! CUDA handles
+		cublasHandle_t m_cublas_handle;
 	};
 }
 

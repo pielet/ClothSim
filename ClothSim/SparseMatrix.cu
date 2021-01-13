@@ -116,6 +116,7 @@ namespace cloth
 		return k;
 	}
 
+	//! Assume blockDim.x is the exponential of 2
 	template <typename T>
 	__device__ void exclusive_scan(T* values)
 	{
@@ -152,7 +153,9 @@ namespace cloth
 		}
 	}
 
-	__global__ void mergeSortKernel(int n_row, int* row_ptr, int* col_idx, int* new_row_ptr, int* debug)
+	//! radix sort
+	//! reference: http://www.compsci.hunter.cuny.edu/~sweiss/course_materials/csci360/lecture_notes/radix_sort_cuda.cc
+	__global__ void mergeSortKernel(int n_row, int* row_ptr, int* col_idx, int* new_row_ptr)
 	{
 		int bid = blockIdx.x;
 		int tid = threadIdx.x;
@@ -205,7 +208,10 @@ namespace cloth
 
 		// output
 		if (bit) col_idx[start + one_bits[tid]] = buffer[tid];
-		if (tid == 0) new_row_ptr[blockIdx.x] = num_ones;
+		if (tid < 3) 
+		{
+			new_row_ptr[3 * blockIdx.x + tid] = 3 * num_ones;
+		}
 	}
 
 	__global__ void countFaceIndicesKernel(int n_face, const FaceIdx* face_idx, int* row_ptr, FaceIdx* start_idx)
@@ -271,34 +277,46 @@ namespace cloth
 		int i = blockIdx.x * blockDim.x + threadIdx.x;
 		if (i >= n) return;
 
-		int s_old = row_ptr[i];
-		int s_new = new_row_ptr[i], s_end = new_row_ptr[i + 1];
+		int old_start = row_ptr[i / 3];
+		int new_start = new_row_ptr[i];
+		int length = (new_row_ptr[i + 1] - new_start) / 3;
 
-		int j = 0;
-		for (int i = s_new; i < s_end; ++i)
+		for (int j = 0; j < length; ++j)
 		{
-			new_col_idx[i] = col_idx[s_old + j];
-			++j;
+#pragma unroll
+			for (int k = 0; k < 3; ++k)
+				new_col_idx[new_start + 3 * j + k] = 3 * col_idx[old_start + j] + k;
 		}
 	}
 
-	template <typename ScalarType, int block_dim>
-	SparseMatrix<ScalarType, block_dim>::SparseMatrix():
-		m_n(0), m_nnz(0), m_value(NULL), m_row_ptr(NULL), m_col_idx(NULL)
+	__global__ void getDiagonalKernel(int n, const int* row_ptr, const int* col_idx, int* diag_idx)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n) return;
+
+		int idx;
+		for (idx = row_ptr[i]; idx < row_ptr[i + 1]; ++idx)
+		{
+			if (col_idx[idx] == i) break;
+		}
+		diag_idx[i] = idx;
+	}
+
+	SparseMatrix::SparseMatrix():
+		m_n(0), m_nnz(0), m_value(NULL), m_row_ptr(NULL), m_col_idx(NULL), m_diagonal_idx(NULL)
 	{}
 
-	template <typename ScalarType, int block_dim>
-	SparseMatrix<ScalarType, block_dim>::~SparseMatrix()
+	SparseMatrix::~SparseMatrix()
 	{
 		if (m_value) cudaFree(m_value);
 		if (m_row_ptr) cudaFree(m_row_ptr);
 		if (m_col_idx) cudaFree(m_col_idx);
+		if (m_diagonal_idx) cudaFree(m_diagonal_idx);
 	}
 
-	template <typename ScalarType, int block_dim>
-	void SparseMatrix<ScalarType, block_dim>::initialize(int n_node, int n_face, int n_edge, const FaceIdx* faces, const EdgeIdx* edges)
+	void SparseMatrix::initialize(int n_node, int n_face, int n_edge, const FaceIdx* faces, const EdgeIdx* edges)
 	{
-		m_n = n_node;
+		m_n = 3 * n_node;
 
 		// 1. Count number of indices and start indices
 		int* row_ptr;
@@ -312,6 +330,13 @@ namespace cloth
 
 		countFaceIndicesKernel <<< get_block_num(n_face), g_block_dim >>> (n_face, faces, row_ptr, face_start_idx);
 		countEdgeIndicesKernel <<< get_block_num(n_edge), g_block_dim >>> (n_edge, edges, row_ptr, edge_start_idx);
+
+		//std::vector<int> test;
+		//test.resize(n_node + 1);
+		//cudaMemcpy(test.data(), row_ptr, test.size() * sizeof(int), cudaMemcpyDeviceToHost);
+		//std::cout << '\n';
+		//for (int i = 0; i < test.size(); ++i)
+		//	std::cout << test[i] << ' ';
 
 		//prefix_sum(get_block_num(n_node + 1), g_block_dim, m_row_ptr);
 		int* max_row_dptr = thrust::max_element(thrust::device, row_ptr, row_ptr + n_node);
@@ -329,29 +354,21 @@ namespace cloth
 		fillEdgeIndicesKernel <<< get_block_num(n_edge), g_block_dim >>> (n_edge, edges, edge_start_idx, row_ptr, col_idx);
 
 		// 3. Merge sort
-		cudaMalloc((void**)&m_row_ptr, (n_node + 1) * sizeof(int));
-		int n_threads = (max_row + 31) & ~31;
-
-		int* one_bit;
-		cudaMalloc((void**)&one_bit, n_threads * n_node * sizeof(int));
-
-		mergeSortKernel <<< n_node, n_threads, 2 * n_threads * sizeof(int) >>> (n_node, row_ptr, col_idx, m_row_ptr, one_bit);
+		cudaMalloc((void**)&m_row_ptr, (m_n + 1) * sizeof(int));
+		int n_threads = 1;
+		while (n_threads < max_row) n_threads <<= 2;
+		mergeSortKernel <<< n_node, n_threads, 2 * n_threads * sizeof(int) >>> (n_node, row_ptr, col_idx, m_row_ptr);
 
 		// 4. Adjust row_ptr and compact col_idx
-		thrust::exclusive_scan(thrust::device, m_row_ptr, m_row_ptr + n_node + 1, m_row_ptr);
-		cudaMemcpy(&m_nnz, &m_row_ptr[n_node], sizeof(int), cudaMemcpyDeviceToHost);
+		thrust::exclusive_scan(thrust::device, m_row_ptr, m_row_ptr + m_n + 1, m_row_ptr);
+		cudaMemcpy(&m_nnz, &m_row_ptr[m_n], sizeof(int), cudaMemcpyDeviceToHost);
 		cudaMalloc((void**)&m_col_idx, m_nnz * sizeof(int));
-		adjustColIdxKernel <<< get_block_num(n_node), g_block_dim >>> (n_node, row_ptr, m_row_ptr, col_idx, m_col_idx);
-
-		//std::vector<int> test(5);
-		//test.resize(n_node + 1);
-		//cudaMemcpy(test.data(), m_row_ptr, test.size() * sizeof(int), cudaMemcpyDeviceToHost);
-		//std::cout << '\n';
-		//for (int i = 0; i < test.size(); ++i)
-		//	std::cout << test[i] << ' ';
+		adjustColIdxKernel <<< get_block_num(m_n), g_block_dim >>> (m_n, row_ptr, m_row_ptr, col_idx, m_col_idx);
 
 		// 5. Alocate data
-		cudaMalloc((void**)&m_value, m_nnz * block_dim * block_dim * sizeof(ScalarType));
+		cudaMalloc((void**)&m_value, m_nnz * sizeof(Scalar));
+		cudaMalloc((void**)&m_diagonal_idx, m_n * sizeof(int));
+		getDiagonalKernel <<< get_block_num(m_n), g_block_dim >>> (m_n, m_row_ptr, m_col_idx, m_diagonal_idx);
 
 		// 6. Clean up
 		cudaFree(row_ptr);
@@ -360,35 +377,121 @@ namespace cloth
 		cudaFree(edge_start_idx);
 	}
 
-	template <typename ScalarType, int block_dim>
-	void SparseMatrix<ScalarType, block_dim>::initialize(SparseMatrix<ScalarType, block_dim>& other)
+	void SparseMatrix::initialize(SparseMatrix& other)
 	{
 		m_n = other.m_n;
 		m_nnz = other.m_nnz;
 		m_row_ptr = other.m_row_ptr;
 		m_col_idx = other.m_col_idx;
-		cudaMalloc((void**)&m_value, m_nnz * block_dim * block_dim * sizeof(ScalarType));
-		cudaMemset(m_value, 0, m_nnz * block_dim * block_dim * sizeof(ScalarType));
+		m_diagonal_idx = other.m_diagonal_idx;
+		cudaMalloc((void**)&m_value, m_nnz * sizeof(Scalar));
+		cudaMemset(m_value, 0, m_nnz * sizeof(Scalar));
 	}
 
-	template <typename ScalarType, int block_dim>
-	CUDA_CALLABLE_MEMBER ScalarType* SparseMatrix<ScalarType, block_dim>::getValue()
+	void SparseMatrix::assign(SparseMatrix& other)
+	{
+		cudaMemcpy(m_value, other.m_value, m_nnz * sizeof(Scalar), cudaMemcpyDeviceToDevice);
+	}
+
+	__global__ void addInDiagonalKernel(int n, Scalar a, const int* diag_idx, const Scalar* M, Scalar* value)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n) return;
+
+		for (int j = 0; j < 3; ++j)
+		{
+			value[diag_idx[3 * i + j]] += a * M[i];
+		}
+	}
+
+	void SparseMatrix::addInDiagonal(const Scalar* M, Scalar a)
+	{
+		addInDiagonalKernel <<< get_block_num(m_n / 3), g_block_dim >>> (m_n / 3, a, m_diagonal_idx, M, m_value);
+	}
+
+	__global__ void invDiagonalKernel(int n, const int* diag_idx, const Scalar* value, Scalar* out)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n) return;
+
+		out[i] = 1 / value[diag_idx[i]];
+	}
+
+	void SparseMatrix::invDiagonal(Scalar* out)
+	{
+		invDiagonalKernel <<< get_block_num(m_n), g_block_dim >>> (m_n, m_diagonal_idx, m_value, out);
+	}
+
+	void SparseMatrix::setZero()
+	{
+		cudaMemset(m_value, 0, m_nnz * sizeof(Scalar));
+	}
+
+	CUDA_CALLABLE_MEMBER Scalar* SparseMatrix::getValue()
 	{
 		return m_value;
 	}
 
-	template <typename ScalarType, int block_dim>
-	CUDA_CALLABLE_MEMBER int* SparseMatrix<ScalarType, block_dim>::getRowPtr()
+	CUDA_CALLABLE_MEMBER int* SparseMatrix::getRowPtr()
 	{
 		return m_row_ptr;
 	}
 
-	template <typename ScalarType, int block_dim>
-	CUDA_CALLABLE_MEMBER int* SparseMatrix<ScalarType, block_dim>::getColIdx()
+	CUDA_CALLABLE_MEMBER int* SparseMatrix::getColIdx()
 	{
 		return m_col_idx;
 	}
 
-	template class SparseMatrix<float, 3>;
-	template class SparseMatrix<double, 3>;
+	CUDA_CALLABLE_MEMBER int* SparseMatrix::getDiagonalIdx()
+	{
+		return m_diagonal_idx;
+	}
+
+	SparseMatrixWrapper::SparseMatrixWrapper(SparseMatrix& A):
+		m_value(A.getValue()), m_row_ptr(A.getRowPtr()), m_col_idx(A.getColIdx()), m_diagonal_idx(A.getDiagonalIdx())
+	{}
+
+	CUDA_MEMBER void SparseMatrixWrapper::atomicAddIdentity(int row, int col, Scalar value)
+	{
+		int i;
+		for (i = m_row_ptr[3 * row]; i < m_row_ptr[3 * row + 1]; ++i)
+		{
+			if (m_col_idx[i] == 3 * col) break;
+		}
+		i -= m_row_ptr[3 * row];
+
+#pragma unroll
+		for (int j = 0; j < 3; ++j)
+		{
+			atomicAdd(&m_value[m_row_ptr[3 * row + j] + i + j], value);
+		}
+	}
+
+	CUDA_MEMBER void SparseMatrixWrapper::atomicAddInIndentity(int i, Scalar value)
+	{
+#pragma unroll
+		for (int j = 0; j < 3; ++j)
+		{
+			atomicAdd(&m_value[m_diagonal_idx[3 * i + j]], value);
+		}
+	}
+
+	CUDA_MEMBER void SparseMatrixWrapper::atomicAddBlock(int bi, int bj, const Mat<Scalar, 3, 3>& mat)
+	{
+		int row = 3 * bi;
+		int col;
+		for (col = m_row_ptr[row]; col < m_row_ptr[row + 1]; ++col)
+		{
+			if (m_col_idx[col] == 3 * bj) break;
+		}
+		col -= m_row_ptr[row];
+
+#pragma unroll
+		for (int i = 0; i < 3; ++i) 
+#pragma unroll
+			for (int j = 0; j < 3; ++j)
+		{
+			atomicAdd(&m_value[m_row_ptr[row + i] + col + j], mat(i, j));
+		}
+	}
 }

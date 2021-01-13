@@ -6,14 +6,15 @@
 #include "../../ClothSim/Utils/MathDef.h"
 #include "../../ClothSim/ClothSim.h"
 
-__global__ void copyIndices(int n_faces, unsigned* dst, const cloth::FaceIdx* src)
+__global__ void copyIndices(int n_faces, int offset, unsigned* dst, const cloth::FaceIdx* src)
 {
-	int idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (idx >= n_faces) return;
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+	if (i >= n_faces) return;
 
-	dst[3 * idx] = src[idx](0);
-	dst[3 * idx + 1] = src[idx](1);
-	dst[3 * idx + 2] = src[idx](2);
+	cloth::FaceIdx idx = src[i] + offset;
+	dst[3 * i] = idx(0);
+	dst[3 * i + 1] = idx(1);
+	dst[3 * i + 2] = idx(2);
 }
 
 __global__ void copyPositions(int n_nodes, float* dst, const cloth::Vec3x* src)
@@ -51,7 +52,8 @@ ClothRenderer::ClothRenderer(int num_nodes, int num_faces, const cloth::ClothSim
 	int face_count = 0;
 	for (int i = 0; i < cloth_sim->getNumCloths(); ++i)
 	{
-		copyIndices <<< get_block_num(num_faces), g_block_dim >>> (cloth_sim->getNumFaces(i), &idx[3 * face_count], cloth_sim->getFaceIndices(i));
+		copyIndices <<< cloth::get_block_num(num_faces), cloth::g_block_dim >>> (
+			cloth_sim->getNumFaces(i), cloth_sim->getOffset(i), &idx[3 * face_count], cloth_sim->getFaceIndices(i));
 		face_count += cloth_sim->getNumFaces(i);
 	}
 	cudaGraphicsUnmapResources(1, &m_cudaResource, 0);
@@ -92,7 +94,6 @@ void ClothRenderer::draw(const Shader* shader)
 	// black wireframe
 	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	shader->setVec4f("vertex_color", 77.f / 255.f, 26.f / 255.f, 0.f / 255.f, 1.f);
-	glLineWidth(2.f);
 	glDrawElements(GL_TRIANGLES, 3 * m_num_faces, GL_UNSIGNED_INT, 0);
 }
 
@@ -104,7 +105,7 @@ void ClothRenderer::updateVertices()
 	cudaGraphicsMapResources(1, &m_cudaResource, 0);
 	cudaGraphicsResourceGetMappedPointer((void**)& ptr, &num_bytes, m_cudaResource);
 
-	copyPositions <<< get_block_num(m_num_nodes), g_block_dim >>> (m_num_nodes, ptr, m_sim->getPositions());
+	copyPositions <<< cloth::get_block_num(m_num_nodes), cloth::g_block_dim >>> (m_num_nodes, ptr, m_sim->getPositions());
 
 	// Upmap data
 	cudaGraphicsUnmapResources(1, &m_cudaResource, 0);

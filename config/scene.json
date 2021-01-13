@@ -1,26 +1,35 @@
 {
-	"time": 5.0,	// s
+	"duration": 5.0,	// s
 	"dt": 0.001,
 
-	"parameters":[{
+	"parameters":[{ // aluminum
 		"mesh_type": 0,
 		"youngs_modulus": 2e+12,
 		"poisson_ratio": 0.3,
 		"density": 8.05,	// g/cm^2
 		"thickness": 0.1,	// cm
 		"bending_stiffness": 2e8,
-		"attachment_stiffness": 1e10,
+		"attachment_stiffness": 1e10
+	}, { // rubber
+		"mesh_type": 0,
+		"youngs_modulus": 4e7,
+		"poisson_ratio": 0.48,
+		"density": 0.025,	// g/cm^2
+		"thickness": 0.1,	// cm
+		"bending_stiffness": 10,
+		"attachment_stiffness": 1e10
 	}],
 
 	"cloths":[{
-		"mesh": "meshes/square2.obj",
-		"transform":{"rotate_angle": 0, "rotate_axis": [0, 1, 0],"translate": [0, 0, 0]},
-		"parameter": 0
+		"mesh": "meshes/square4.obj",
+		"transform":{"rotate_angle": 0/*degree*/, "rotate_axis": [1, 0, 0],"translate": [0, 0, 0]},
+		"parameter": 1
 	}],
 
 	"nonlinear_solver":{
-		"type": 0, // 0 for Newton'd Method
+		"type": 0, // 0 for Newton's Method
 		"iterations": 5,
+		"enable_line_search": 1,
 		"ls_alpha": 0.03,
 		"ls_beta": 0.5
 	},
@@ -32,12 +41,14 @@
 	},
 
 	"handles":[
-		{"node": 0, "motion": 0}
+		{"cloth_idx": 0, "nodes":[0, 4], "start_idx": 0, "end_idx": 0, "motion": -1}
 	],
 	"motions":[
-		{"start": 0, "end": 0}
+		{"begin": 0, "end": 0}
 	],
 
 	"gravity": [0, -981, 0],
-	"damping": 0.005
+	"enable_damping": 1,
+	"damping_alpha": 1e-9,
+	"damping_beta": 0.001
 }

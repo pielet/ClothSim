@@ -105,16 +105,19 @@ void display()
 	Mat4f MVP = g_camera->getPerspectiveMatrix() * g_camera->getViewMatrix();
 	g_shader->setMat4f("MVP", MVP);
 
-	//if (g_stop)
-	//{
-	//	if (g_step)
-	//	{
-	//		g_cloth->step();
-	//		g_step = false;
-	//	}
-	//}
-	//else g_cloth->step();
+	bool update = false;
 
+	if (g_stop)
+	{
+		if (g_step)
+		{
+			update = g_cloth->step();
+			g_step = false;
+		}
+	}
+	else update = g_cloth->step();
+
+	if (update) g_renderer->ackGeometryChange();
 	g_renderer->draw(g_shader);
 
 	glutSwapBuffers();

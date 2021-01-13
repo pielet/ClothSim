@@ -3,6 +3,7 @@
 
 #include "../json/json.h"
 #include <Eigen/Core>
+#include "MathDef.h"
 
 //! Used for enum type only
 template <typename T>
@@ -10,6 +11,12 @@ void parse(T& value, const Json::Value& json)
 {
 	value = static_cast<T>(json.asInt());
 }
+
+template<>
+void parse(bool& value, const Json::Value& json);
+
+template<>
+void parse(int& value, const Json::Value& json);
 
 template<> 
 void parse(float& value, const Json::Value& json);
@@ -24,6 +31,17 @@ void parse(T1& value, const Json::Value& json, const T2& default_value)
 		value = static_cast<T1>(default_value);
 	else
 		parse<T1>(value, json);
+}
+
+template <typename T, int n>
+void parse(cloth::Vec<T, n>& vec, const Json::Value& json)
+{
+	if (json.isNull())
+		vec.setZero();
+	else {
+		for (int i = 0; i < n; ++i)
+			parse<T>(vec(i), json[i]);
+	}
 }
 
 template <typename T, int n>

@@ -10,18 +10,17 @@
 
 #ifdef __CUDACC__
 #define CUDA_CALLABLE_MEMBER __host__ __device__
+#define CUDA_MEMBER __device__
 #define INLINE __forceinline__
 #else
 #define CUDA_CALLABLE_MEMBER
+#define CUDA_MEMBER
 #define INLINE inline
 #endif
 
 typedef float Scalar;	// global scope
 
-const int g_block_dim = 128;
-#define get_block_num(n) (n + g_block_dim - 1) / g_block_dim
-
-/*************************** Eigen definitions *********************************/
+/****************************** Eigen definitions *********************************/
 namespace Eigen
 {
 	typedef Matrix<float, 3, 1> Vec3f;
@@ -47,6 +46,14 @@ namespace Eigen
 
 namespace cloth
 {
+	const Scalar EPS = 1e-6f;
+
+	const int g_block_dim = 128;
+	inline int get_block_num(int n) { return (n + g_block_dim - 1) / g_block_dim; }
+
+	const Scalar M_PI = 3.141592653589793238462643383279f;
+	inline Scalar degree_to_radian(Scalar n) { return n / 180.f * M_PI; }
+
 	/************************ cuda callable vector and matrix definitions *************************/
 	template <typename T, int n>
 	class Vec
@@ -54,6 +61,8 @@ namespace cloth
 	public:
 		CUDA_CALLABLE_MEMBER Vec() {}
 		CUDA_CALLABLE_MEMBER ~Vec() {}
+		CUDA_CALLABLE_MEMBER Vec(const Vec<T, n>& other);
+		CUDA_CALLABLE_MEMBER Vec(Eigen::Matrix<T, n, 1>& eigen_vec);
 		CUDA_CALLABLE_MEMBER Vec(int x, int y, int z);	// assert n == 3
 		CUDA_CALLABLE_MEMBER Vec(int x, int y, int z, int w);	// assert n == 4
 
@@ -61,8 +70,10 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER const T& operator()(int i) const { return value[i]; }
 
 		CUDA_CALLABLE_MEMBER Vec<T, n> operator-(const Vec<T, n>& other) const;
+		CUDA_CALLABLE_MEMBER Vec<T, n> operator-() const;
 		CUDA_CALLABLE_MEMBER Vec<T, n> operator+(const Vec<T, n>& other) const;
 		CUDA_CALLABLE_MEMBER Vec<T, n> operator+(T a) const;
+		CUDA_CALLABLE_MEMBER Vec<T, n>& operator=(const Vec<T, n>& other);
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator+=(T a);
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator+=(const Vec<T, n>& other);
 
@@ -80,6 +91,7 @@ namespace cloth
 	{
 	public:
 		CUDA_CALLABLE_MEMBER Mat() {}
+		CUDA_CALLABLE_MEMBER Mat(const Mat<T, m, n>& other);
 		CUDA_CALLABLE_MEMBER ~Mat() {}
 
 		CUDA_CALLABLE_MEMBER T& operator()(int i, int j) { return value[i][j]; }
@@ -87,17 +99,23 @@ namespace cloth
 
 		CUDA_CALLABLE_MEMBER Vec<T, m> col(int i) const;
 		CUDA_CALLABLE_MEMBER void setCol(int i, const Vec<T, m>& vec);
+		CUDA_CALLABLE_MEMBER void setRow(int i, const Vec<T, n>& vec);
 		CUDA_CALLABLE_MEMBER void setZero();
 
 		CUDA_CALLABLE_MEMBER Mat<T, m, n> inverse() const;	// only used in Mat<Scalar, 2, 2>
 		CUDA_CALLABLE_MEMBER Mat<T, n, m> transpose() const;
 		CUDA_CALLABLE_MEMBER T trace() const;	// assert m == n
+		CUDA_CALLABLE_MEMBER T squaredNorm() const;
 
 		CUDA_CALLABLE_MEMBER static Mat<T, m, n> Identity();	// assert m == n
 		CUDA_CALLABLE_MEMBER static Mat<T, m, n> Zero();
 
+		CUDA_CALLABLE_MEMBER Mat<T, m, n> operator-(const Mat<T, m, n>& other) const;
+		CUDA_CALLABLE_MEMBER Mat<T, m, n> operator-() const;
 		CUDA_CALLABLE_MEMBER Mat<T, m, n> operator+(const Mat<T, m, n>& other) const;
+		CUDA_CALLABLE_MEMBER Mat<T, m, n>& operator=(const Mat<T, m, n>& other);
 		CUDA_CALLABLE_MEMBER Mat<T, m, n>& operator+=(const Mat<T, m, n>& other);
+		CUDA_CALLABLE_MEMBER  Mat<T, m, n>& operator*=(const Mat<T, n, n>& other);
 
 		CUDA_CALLABLE_MEMBER Mat<T, m, n> operator*(T a);
 		CUDA_CALLABLE_MEMBER Mat<T, m, n> operator/(T a);
@@ -105,22 +123,30 @@ namespace cloth
 		template <int p>
 		CUDA_CALLABLE_MEMBER Mat<T, m, p> operator*(const Mat<T, n, p>& other);
 
+		// Tensor stuff
+		template <typename SquareMat>
+		CUDA_CALLABLE_MEMBER Mat<T, m, n>& innerProd(const SquareMat& mat);
+		template <typename ScalarT>
+		CUDA_CALLABLE_MEMBER Mat<T, m, n>& outerProd(const Mat<ScalarT, n, n>& mat);
+
 		T value[m][n];
 	};
 
-	//template <typename T>
-	//class Mat<T, 3, 3>
-	//{
-	//public:
-	//	CUDA_CALLABLE_MEMBER Mat() {}
-	//	CUDA_CALLABLE_MEMBER ~Mat() {}
-	//	CUDA_CALLABLE_MEMBER T& operator()(int i, int j) { return value[i][j]; }
-	//	CUDA_CALLABLE_MEMBER const T& operator()(int i, int j) const { return value[i][j]; }
-	//private:
-	//	T value[3][3];
-	//};
+	/***************************** Vec Implementation *****************************/
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(const Vec<T, n>& other)
+	{
+#pragma unroll
+		for (int i = 0; i < n; ++i) value[i] = other.value[i];
+	}
 
-	/***************************** Implementation *****************************/
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(Eigen::Matrix<T, n, 1>& eigen_vec)
+	{
+#pragma unroll
+		for (int i = 0; i < n; ++i) value[i] = eigen_vec(i);
+	}
+
 	template <typename T, int n>
 	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(int x, int y, int z)
 	{
@@ -163,6 +189,23 @@ namespace cloth
 	}
 
 	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n> Vec<T, n>::operator-() const
+	{
+		Vec<T, n> vec;
+#pragma unroll
+		for (int i = 0; i < n; ++i) vec.value[i] = -value[i];
+		return vec;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n>& Vec<T, n>::operator=(const Vec<T, n>& other)
+	{
+#pragma unroll
+		for (int i = 0; i < n; ++i) value[i] = other.value[i];
+		return *this;
+	}
+
+	template <typename T, int n>
 	CUDA_CALLABLE_MEMBER Vec<T, n>& Vec<T, n>::operator+=(T a)
 	{
 #pragma unroll
@@ -176,6 +219,15 @@ namespace cloth
 #pragma unroll
 		for (int i = 0; i < n; ++i) value[i] += other.value[i];
 		return *this;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n> operator*(T a, const Vec<T, n>& vec)
+	{
+		Vec<T, n> res;
+#pragma unroll
+		for (int i = 0; i < n; ++i) res.value[i] = a * vec.value[i];
+		return res;
 	}
 
 	template <typename T, int n>
@@ -221,6 +273,18 @@ namespace cloth
 		return res;
 	}
 
+	/****************************** Mat Implementation ****************************/
+
+	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER Mat<T, m, n>::Mat(const Mat<T, m, n>& other)
+	{
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+				value[i][j] = other.value[i][j];
+	}
+
 	template <typename T, int m, int n>
 	CUDA_CALLABLE_MEMBER Vec<T, m> Mat<T, m, n>::col(int ci) const
 	{
@@ -238,6 +302,13 @@ namespace cloth
 	}
 
 	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER void Mat<T, m, n>::setRow(int ri, const Vec<T, n>& vec)
+	{
+#pragma unroll
+		for (int i = 0; i < n; ++i) value[ri][i] = vec.value[i];
+	}
+
+	template <typename T, int m, int n>
 	CUDA_CALLABLE_MEMBER void Mat<T, m, n>::setZero()
 	{
 #pragma unroll
@@ -250,7 +321,6 @@ namespace cloth
 	template <typename T, int m, int n>
 	CUDA_CALLABLE_MEMBER Mat<T, n, m> Mat<T, m, n>::transpose() const
 	{
-		assert(m == n);
 		Mat<T, n, m> mat;
 #pragma unroll
 		for (int i = 0; i < n; ++i)
@@ -267,6 +337,18 @@ namespace cloth
 		T res = 0;
 #pragma unroll
 		for (int i = 0; i < m; ++i) res += value[i][i];
+		return res;
+	}
+
+	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER T Mat<T, m, n>::squaredNorm() const
+	{
+		T res = 0;
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+				res += value[i][j] * value[i][j];
 		return res;
 	}
 
@@ -305,6 +387,41 @@ namespace cloth
 	}
 
 	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER Mat<T, m, n> Mat<T, m, n>::operator-(const Mat<T, m, n>& other) const
+	{
+		Mat<T, m, n> mat;
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+				mat.value[i][j] = value[i][j] - other.value[i][j];
+		return mat;
+	}
+
+	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER Mat<T, m, n> Mat<T, m, n>::operator-() const
+	{
+		Mat<T, m, n> mat;
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+				mat.value[i][j] = -value[i][j];
+		return mat;
+	}
+
+	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER Mat<T, m, n>& Mat<T, m, n>::operator=(const Mat<T, m, n>& other)
+	{
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+				value[i][j] = other.value[i][j];
+		return *this;
+	}
+
+	template <typename T, int m, int n>
 	CUDA_CALLABLE_MEMBER Mat<T, m, n>& Mat<T, m, n>::operator+=(const Mat<T, m, n>& other)
 	{
 #pragma unroll
@@ -312,6 +429,14 @@ namespace cloth
 #pragma unroll
 			for (int j = 0; j < n; ++j)
 				value[i][j] += other.value[i][j];
+		return *this;
+	}
+
+	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER  Mat<T, m, n>& Mat<T, m, n>::operator*=(const Mat<T, n, n>& other)
+	{
+		Mat<T, m, n> res = (*this) * other;
+		*this = res;
 		return *this;
 	}
 
@@ -373,7 +498,7 @@ namespace cloth
 			for (int j = 0; j < p; ++j)
 #pragma unroll
 				for (int k = 0; k < n; ++k)
-					out.value[i][j] += value[i][k] & in.value[k][j];
+					out.value[i][j] += value[i][k] * in.value[k][j];
 		return out;
 	}
 
@@ -390,14 +515,47 @@ namespace cloth
 		return out;
 	}
 
+	template <typename T, int m, int n> template <typename SquareMat>
+	CUDA_CALLABLE_MEMBER Mat<T, m, n>& Mat<T, m, n>::innerProd(const SquareMat& mat)
+	{
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+				value[i][j] *= mat;
+		return *this;
+	}
+
+	template <typename T, int m, int n> template <typename ScalarT>
+	CUDA_CALLABLE_MEMBER Mat<T, m, n>& Mat<T, m, n>::outerProd(const Mat<ScalarT, n, n>& mat)
+	{
+		Mat<T, m, n> res;
+#pragma unroll
+		for (int i = 0; i < m; ++i)
+#pragma unroll
+			for (int j = 0; j < n; ++j)
+			{
+				res.value[i][j].setZero();
+#pragma unroll
+				for (int k = 0; k < n; ++k)
+					res.value[i][j] += mat.value[k][j] * value[i][k];
+			}
+		*this = res;
+		return *this;
+	}
+
 	typedef Vec<int, 3> FaceIdx;
 	typedef Vec<int, 4> EdgeIdx;
 
 	typedef Vec<Scalar, 2> Vec2x;
 	typedef Vec<Scalar, 3> Vec3x;
 	typedef Vec<Scalar, 4> Vec4x;
+
 	typedef Mat<Scalar, 2, 2> Mat2x;
 	typedef Mat<Scalar, 3, 3> Mat3x;
+	typedef Mat<Scalar, 3, 2> Mat3x2x;
+
+	typedef Mat<Mat<Scalar, 3, 2>, 3, 2> Tensor3232x;
 }
 
 #endif // !DEFINITION_H
