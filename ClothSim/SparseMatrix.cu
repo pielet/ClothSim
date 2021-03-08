@@ -62,7 +62,7 @@ namespace cloth
 		value[blockIdx.x * blockDim.x + threadIdx.x] += block_sum[blockIdx.x];
 	}
 
-	/// exclusive scan adopted from Gems Chapter 39
+	/// exclusive scan - adopted from Gems Chapter 39
 	/// https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
 	template <typename T>
 	void prefix_sum(int num_block, int block_size, T* values)

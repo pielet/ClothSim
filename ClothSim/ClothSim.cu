@@ -42,7 +42,7 @@ namespace cloth
 
 	void ClothSim::initialize(std::string scene_fname)
 	{
-		// load json anf obj file
+		// load json and obj file
 		loadScene(scene_fname);
 		
 		// allocates device memory
@@ -105,12 +105,16 @@ namespace cloth
 			m_bending_constraints[i].initialize(
 				n_edges, &m_materials[m_cloths[i].m_param_idx], m_cloths[i].m_edges_idx.data(), &d_x[m_offsets[i]]);
 
+			std::cout << "Finish initializing constraints.\n";
+
 			m_A[i].initialize(n_nodes, n_faces, n_edges, m_stretching_constraints[i].getIndices(), m_bending_constraints[i].getIndices());
 			m_init_A[i].initialize(m_A[i]);
 			m_stiffness_matrix[i].initialize(m_A[i]);
 
 			CublasCaller<Scalar>::scal(m_cublas_handle, n_nodes, &m_materials[m_cloths[i].m_param_idx].m_density, &d_mass[m_offsets[i]]);
 			m_bending_constraints[i].precompute(m_init_A[i]);
+
+			std::cout << "Finish preparing sparse matrix.\n";
 
 			// attachment constraints
 			handles.clear(); targets.clear(); n_fixed = 0;
@@ -120,13 +124,15 @@ namespace cloth
 				{
 					n_fixed += iter->m_num_nodes;
 					handles.insert(handles.end(), iter->m_indices.begin(), iter->m_indices.end());
-					targets.insert(targets.end(), iter->m_init_targets.begin(), iter->m_init_targets.end());
+					targets.insert(targets.end(), iter->m_targets.begin(), iter->m_targets.end());
 				}
 			}
 			m_attachment_constraints[i].initialize(n_fixed, m_materials[m_cloths[i].m_param_idx].m_attachment_stiffness, handles.data(), targets.data());
 		
 			m_solvers[i].initialize(&m_A[i], LinearSolver::Diagnal);
 			m_mv[i].initialize(&m_stiffness_matrix[i], (Scalar*)&d_v_next[m_offsets[i]], (Scalar*)&d_Kv[m_offsets[i]]);
+
+			std::cout << "Finish initializing solver.\n";
 		}
 
 		cudaDeviceSynchronize();
@@ -137,7 +143,8 @@ namespace cloth
 		std::fstream fin(scene_fname);
 		if (!fin.is_open())
 		{
-			throw std::runtime_error("[ClothSim::loadScene] Can NOT open json file: " + scene_fname);
+			std::cerr << "[ClothSim::loadScene] Can NOT open json file : " << scene_fname << std::endl;
+			exit(-1);
 		}
 
 		Json::Value root;
@@ -178,6 +185,7 @@ namespace cloth
 			parse(param.m_bending_stiffness, value["bending_stiffness"], 2e8f);
 			parse(param.m_attachment_stiffness, value["attachment_stiffness"], 1e10f);
 		}
+		std::cout << "Finish loading parameters.\n";
 
 		// load cloth models
 		m_num_cloths = root["cloths"].size();
@@ -185,19 +193,26 @@ namespace cloth
 		m_offsets[0] = 0;
 		for (int i = 0; i < m_num_cloths; ++i)
 		{
-			m_cloths.push_back(Cloth(root["cloths"][i]));
+			m_cloths.emplace_back(root["cloths"][i]);
 			m_offsets[i + 1] = m_offsets[i] + m_cloths.back().m_num_nodes;
 		}
+		std::cout << "Finish loading cloth model(s)\n";
 
 		// load handles and animations
-		int n_handle_groups = root["handles"].size();
 		int json_idx = 0;
 		m_num_handles = 0;
 		for (int i = 0; i < root["handles"].size(); ++i)
 		{
-			m_handle_groups.push_back(HandleGroup(root["handles"][i], m_cloths));
+			m_handle_groups.emplace_back(root["handles"][i], m_cloths);
 			m_num_handles += m_handle_groups.back().m_num_nodes;
 		}
+		std::cout << "Finish loading handles.\n";
+
+		for (int i = 0; i < root["motions"].size(); ++i)
+		{
+			m_motion_scripts.push_back(MotionScript(root["motions"][i], m_handle_groups));
+		}
+		std::cout << "Finish loading motions.\n";
 	}
 
 	Cloth::Cloth(Json::Value& json)
@@ -216,7 +231,8 @@ namespace cloth
 		std::fstream fin("../" + fname);
 		if (!fin.is_open())
 		{
-			throw std::runtime_error("[ClothSim::loadScene] Can NOT open obj file: " + fname);
+			std::cerr << "[ClothSim::loadScene] Can NOT open obj file: " << fname << std::endl;
+			exit(-1);
 		}
 
 		Eigen::Vec3x pos;
@@ -314,31 +330,108 @@ namespace cloth
 		parse(m_cloth_idx, json["cloth_idx"], 0);
 		parse(start, json["start_idx"]);
 		parse(end, json["end_idx"]);
-		parse(m_motion_idx, json["motion"], -1);  // -1 means fixed
 
 		for (int i = start; i < end; ++i)
 		{
 			m_indices.push_back(i);
-			m_init_targets.push_back(cloths[m_cloth_idx].m_x[i]);
+			m_targets.push_back(cloths[m_cloth_idx].m_x[i]);
 		}
 		int node;
 		for (int i = 0; i < json["nodes"].size(); ++i)
 		{
 			parse(node, json["nodes"][i]);
 			m_indices.push_back(node);
-			m_init_targets.push_back(cloths[m_cloth_idx].m_x[node]);
+			m_targets.push_back(cloths[m_cloth_idx].m_x[node]);
 		}
 
 		m_num_nodes = m_indices.size();
-		m_targets.resize(m_num_nodes);
+
+		m_center.setZero();
+		for (int i = 0; i < m_num_nodes; ++i)
+		{
+			m_center += m_targets[i];
+		}
+		m_center /= m_num_nodes;
+
+		m_activate = true;
 	}
 
-	void HandleGroup::update(Scalar time)
+	MotionScript::MotionScript(Json::Value& json, std::vector<HandleGroup>& handles)
 	{
-		if (m_motion_idx == -1)
+		std::string type = json["type"].asString();
+
+		int handle_idx;
+		parse(handle_idx, json["group"], 0);
+		if (handle_idx >= handles.size())
 		{
-			m_targets = m_init_targets;
-			return;
+			std::cerr << "[MotionScript::MotionScript] Group index exceeds actual handle group size." << std::endl;
+			exit(-1);
+		}
+		m_handle = &handles[handle_idx];
+
+		parse(m_begin, json["begin"]);
+		parse(m_end, json["end"]);
+		m_ease_begin = m_ease_end = (m_end - m_begin) / 5;
+
+		if (type == "translate")
+		{
+			m_type = MOTION_TYPE_TRANSLATE;
+			parse(m_axis, json["direction"]);
+			parse(m_amount, json["distance"]);
+			m_axis.normalize();
+		}
+		else if (type == "rotate")
+		{
+			m_type = MOTION_TYPE_ROTATE;
+			parse(m_origin, json["origin"], m_handle->m_center);
+			parse(m_axis, json["axis"]);
+			parse(m_amount, json["angle"]);
+			m_axis.normalize();
+		}
+		else if (type == "delete")
+		{
+			m_type = MOTION_TYPE_DELETE;
+		}
+		else
+		{
+			std::cerr << "[MotionScript::MotionScript] Unknown motion type : " << type << std::endl;
+			exit(-1);
+		}
+	}
+
+	Scalar cubic_ease_function(const Scalar& t, const Scalar& t0, const Scalar& t1, const Scalar& ta, const Scalar& tb, const Scalar& L)
+	{
+		Scalar yh = (L * 2.0) / (t1 - t0 + tb - ta);
+		if (t < t0 || t > t1) return 0.0;
+		else {
+			if (t < ta) return (yh * (t0 - t) * (t0 - t) * (t0 - 3.0 * ta + 2.0 * t)) / ((t0 - ta) * (t0 - ta) * (t0 - ta));
+			else if (t > tb) return (yh * (t1 - t) * (t1 - t) * (t1 - 3.0 * tb + 2.0 * t)) / ((t1 - tb) * (t1 - tb) * (t1 - tb));
+			else return yh;
+		}
+	}
+
+	void MotionScript::update(Scalar current_time, Scalar dt)
+	{
+		if (current_time > m_begin && current_time < m_end)
+		{
+			if (m_type == MOTION_TYPE_DELETE) m_handle->m_activate = false;
+			else
+			{
+				for (int i = 0; i < m_handle->m_num_nodes; ++i)
+				{
+					Scalar vel = cubic_ease_function(current_time, m_begin, m_end, m_begin + m_ease_begin, m_end - m_ease_end, m_amount);
+					
+					if (m_type == MOTION_TYPE_TRANSLATE)
+					{
+						m_handle->m_targets[i] += vel * dt * Vec3x(m_axis);
+					}
+					else if (m_type == MOTION_TYPE_ROTATE)
+					{
+						Eigen::AngleAxisx rot(vel * dt, m_axis);
+						m_handle->m_targets[i] = Vec3x(rot * Eigen::Vec3x((m_handle->m_targets[i] - m_origin).value)) + m_origin;
+					}
+				}
+			}
 		}
 	}
 
@@ -354,6 +447,27 @@ namespace cloth
 	{
 		m_time += m_dt;
 		if (m_time > m_duration) return false;
+
+		// update handles
+		for (int i = 0; i < m_motion_scripts.size(); ++i) m_motion_scripts[i].update(m_time, m_dt);
+
+		std::vector<int> handles;
+		std::vector<Vec3x> targets;
+		int n_fixed;
+		for (int i = 0; i < m_num_cloths; ++i)
+		{
+			handles.clear(); targets.clear(); n_fixed = 0;
+			for (auto iter = m_handle_groups.begin(); iter != m_handle_groups.end(); ++iter)
+			{
+				if (iter->m_cloth_idx == i && iter->m_activate)
+				{
+					n_fixed += iter->m_num_nodes;
+					handles.insert(handles.end(), iter->m_indices.begin(), iter->m_indices.end());
+					targets.insert(targets.end(), iter->m_targets.begin(), iter->m_targets.end());
+				}
+			}
+			m_attachment_constraints[i].update(n_fixed, handles.data(), targets.data());
+		}
 
 		// Computes initial guess
 		computeInitialGuessKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (m_num_total_nodes, m_dt, d_v, m_gravity, d_u);
@@ -432,11 +546,18 @@ namespace cloth
 		evaluateGradientAndHessian(d_x_next);
 
 		std::vector<bool> status(m_num_cloths);
+		cudaMemset(d_delta_v, 0, m_num_total_nodes * sizeof(Vec3x));
 		for (int i = 0; i < m_num_cloths; ++i)
 		{
 			// Linear solver
 			if (!m_converged[i])
-				status[i] = m_solvers[i].cholesky((Scalar*)&d_g[m_offsets[i]], (Scalar*)&d_delta_v[m_offsets[i]]);
+			{
+				if (m_linear_solver_type == LINEAR_SOLVER_DIRECT_LLT)
+					status[i] = m_solvers[i].cholesky((Scalar*)&d_g[m_offsets[i]], (Scalar*)&d_delta_v[m_offsets[i]]);
+				else 
+					status[i] = m_solvers[i].conjugateGradient((Scalar*)&d_g[m_offsets[i]], (Scalar*)&d_delta_v[m_offsets[i]],
+						m_linear_solver_iterations, m_linear_solver_error);
+			}
 		}
 
 		Scalar minus_one = -1;
@@ -455,7 +576,7 @@ namespace cloth
 		{
 			if (!m_converged[i]) obj_values[i] = lineSearch(i, d_g, d_delta_v);
 			if (m_step_size[i] < 1e-5f) m_converged[i] = true;
-			std::cout << "objective value " << obj_values[i] << "  step size " << m_step_size[i] << std::endl;
+			std::cout << "  step size " << m_step_size[i] << std::endl;
 		}
 
 		bool all_pass = true;

@@ -1,4 +1,5 @@
 #include "LinearSolver.h"
+#include <iostream>
 
 namespace cloth
 {
@@ -267,7 +268,7 @@ namespace cloth
 		return singularity < 0;
 	}
 
-	bool LinearSolver::conjugateGradient(const Scalar* b, Scalar* x)
+	bool LinearSolver::conjugateGradient(const Scalar* b, Scalar* x, int iters, Scalar err)
 	{
 		Scalar one = 1.0, neg_one = -1.0;
 		Scalar res, bnorm, alpha, beta;
@@ -282,7 +283,7 @@ namespace cloth
 		bool status = m_precond->analysis();
 		if (!status)
 		{
-			//std::cerr << "Preconditioner analysis failed. EXIT." << std::endl;
+			std::cerr << "Preconditioner analysis failed. EXIT." << std::endl;
 			exit(-1);
 		}
 
@@ -305,7 +306,7 @@ namespace cloth
 		Eigen::VecXx test(m_n);
 
 		int k = 0;
-		for (k; k < m_n; ++k)
+		for (k; k < iters; ++k)
 		{
 			m_mv_caller.mv();
 			CublasCaller<Scalar>::dot(m_cublasHandle, m_n, d_p, d_Ap, &pAp);
@@ -319,21 +320,7 @@ namespace cloth
 			CublasCaller<Scalar>::dot(m_cublasHandle, m_n, d_r, d_r, &res);
 			//std::cout << "\t iter: " << k << " rTr: " << res << std::endl;
 
-			//CublasCaller<Scalar>::copy(m_cublasHandle, m_n, d_p, d_Ap);
-			//CublasCaller<Scalar>::copy(m_cublasHandle, m_n, x, d_p);
-			//CusparseCaller<Scalar>::mv(m_cusparseHandle, &one, m_matA, m_vecp, &zero, m_vecAp, d_buffer);
-			//CublasCaller<Scalar>::copy(m_cublasHandle, m_n, d_r, d_z);
-			//CublasCaller<Scalar>::copy(m_cublasHandle, m_n, d_b, d_r);
-			//CublasCaller<Scalar>::axpy(m_cublasHandle, m_n, &neg_one, d_Ap, d_r);
-			//CublasCaller<Scalar>::dot(m_cublasHandle, m_n, d_r, d_r, &res);
-			//cudaMemcpy(test.data(), x, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-			//for (int i = 0; i < m_n; ++i)
-			//	std::cout << std::setprecision(std::numeric_limits<Scalar>::digits10 + 1) << test(i) << ' ';
-			//std::cout << '\n';
-			//CublasCaller<Scalar>::copy(m_cublasHandle, m_n, d_Ap, d_p);
-			//CublasCaller<Scalar>::copy(m_cublasHandle, m_n, d_z, d_r);
-
-			//if (res < eps * bnorm) break;
+			if (res < std::min(err * bnorm, err)) break;
 
 			m_precond->solve(d_r, d_z);
 			CublasCaller<Scalar>::dot(m_cublasHandle, m_n, d_r, d_z, &rz);
@@ -342,7 +329,7 @@ namespace cloth
 			CublasCaller<Scalar>::axpy(m_cublasHandle, m_n, &one, d_z, d_p);
 		}
 
-		//std::cout << "Total CG iteration: " << k << " residual: " << res << std::endl;
+		std::cout << "Total CG iteration: " << k << " residual: " << res;
 
 		return true;
 	}

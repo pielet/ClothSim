@@ -391,6 +391,16 @@ namespace cloth
 		}
 	}
 
+	void AttachmentConstraints::update(int n_fixed, const int* indices, const Vec3x* targets)
+	{
+		m_num_fixed = n_fixed;
+		if (n_fixed)
+		{
+			cudaMemcpy(m_indices, indices, n_fixed * sizeof(int), cudaMemcpyHostToDevice);
+			cudaMemcpy(m_targets, targets, n_fixed * sizeof(Vec3x), cudaMemcpyHostToDevice);
+		}
+	}
+
 	__global__ void computeAttachmentEnergyKernel(int n_attach, Scalar m_stiffness, const int* indices, const Vec3x* targets, const Vec3x* x, Scalar* energies)
 	{
 		int i = blockIdx.x * blockDim.x + threadIdx.x;

@@ -63,8 +63,6 @@ namespace cloth
 
 	struct Cloth
 	{
-		EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
 		//! Input models
 		std::vector<Vec3x> m_x;
 		std::vector<Vec2x> m_uv;
@@ -84,15 +82,44 @@ namespace cloth
 	struct HandleGroup
 	{
 		std::vector<int> m_indices;
-		std::vector<Vec3x> m_init_targets;
 		std::vector<Vec3x> m_targets;
+
+		Vec3x m_center;
 
 		int m_num_nodes;
 		int m_cloth_idx;
-		int m_motion_idx;
+
+		bool m_activate;
 
 		HandleGroup(Json::Value& json, const std::vector<Cloth>& cloths);
-		void update(Scalar time);
+	};
+
+	struct MotionScript
+	{
+		enum Type
+		{
+			MOTION_TYPE_TRANSLATE,
+			MOTION_TYPE_ROTATE,
+			MOTION_TYPE_DELETE,
+
+			MOTION_TYPE_COUNT
+		};
+
+		Type m_type;
+
+		Scalar m_begin;
+		Scalar m_end;
+		Vec3x m_origin;
+		Eigen::Vec3x m_axis;
+		Scalar m_amount; //< total distance or angle
+
+		Scalar m_ease_begin;
+		Scalar m_ease_end;
+
+		HandleGroup* m_handle;
+
+		MotionScript(Json::Value& json, std::vector<HandleGroup>& handles);
+		void update(Scalar current_time, Scalar dt);
 	};
 
 	class /*EXPORT*/ ClothSim
@@ -106,12 +133,15 @@ namespace cloth
 		//! Reads config file (.json) and objective model (.obj), allocates memory on gpu and initializes constraints
 		void initialize(std::string filename);
 
-		//! Step once, returns false if the simulation finished.
+		//! Step once, returns false if the simulation has finished.
 		bool step();
 
 		//! Access device data (for rendering)
 		const FaceIdx* getFaceIndices(int i) const;
 		const Vec3x* getPositions() const;
+
+		//! Output obj model
+		void output() const;
 
 		//! Access counting
 		int getOffset(int i) const;
@@ -175,6 +205,7 @@ namespace cloth
 
 		//! Animation
 		std::vector<HandleGroup> m_handle_groups;
+		std::vector<MotionScript> m_motion_scripts;
 
 		//! Solver variables
 		Vec3x* d_u;

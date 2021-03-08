@@ -38,7 +38,7 @@ namespace cloth
 		void initialize(SparseMatrix* matrix, PrecondT pt = NoPreconditionner);
 
 		bool cholesky(const Scalar* b, Scalar* x);
-		bool conjugateGradient(const Scalar* b, Scalar* x);
+		bool conjugateGradient(const Scalar* b, Scalar* x, int iters, Scalar err);
 
 	private:
 		int m_n;

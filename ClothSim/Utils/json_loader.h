@@ -45,6 +45,17 @@ void parse(cloth::Vec<T, n>& vec, const Json::Value& json)
 }
 
 template <typename T, int n>
+void parse(cloth::Vec<T, n>& vec, const Json::Value& json, cloth::Vec<T, n>& default_vec)
+{
+	if (json.isNull())
+		vec = default_vec;
+	else {
+		for (int i = 0; i < n; ++i)
+			parse<T>(vec(i), json[i]);
+	}
+}
+
+template <typename T, int n>
 void parse(Eigen::Matrix<T, n, 1>& vec, const Json::Value& json)
 {
 	if (json.isNull())

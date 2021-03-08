@@ -74,7 +74,7 @@ namespace cloth
 
 		void initialize(int n_fixed, Scalar stiffness, const int* indices, const Vec3x* targets);
 		
-		void updateHandles(); 
+		void update(int n_fixed, const int* indices, const Vec3x* targets);
 		
 		Scalar computeEnergy(const Vec3x* x);
 		void computeGradiantAndHessian(const Vec3x* x, Vec3x* gradient, SparseMatrix& hessian);
