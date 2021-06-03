@@ -1,5 +1,5 @@
 // Author: Shiyang Jia (jsy0325@foxmail.com)
-// Data: 12/23/2020
+// Date: 12/23/2020
 
 #ifndef CLOTH_SIM_H
 #define CLOTH_SIM_H
@@ -28,6 +28,7 @@ namespace cloth
 	enum MeshType
 	{
 		MESH_TYPE_StVK,
+		MESH_TYPE_COROTATED,
 		MESH_TYPE_NEO_HOOKEAN,
 		MESH_TYPE_DATA_DRIVEN,
 
@@ -37,6 +38,7 @@ namespace cloth
 	enum IntegrationMethod
 	{
 		INTEGRATION_METHOD_NEWTON,
+		INTEGRATION_METHOD_PD,
 		INTEGRATION_METHOD_LBFGS,
 
 		INTEGRATION_METHOD_COUNT
@@ -67,6 +69,7 @@ namespace cloth
 		std::vector<Vec3x> m_x;
 		std::vector<Vec2x> m_uv;
 		std::vector<FaceIdx> m_faces_idx;
+		std::vector<FaceIdx> m_faces_uv_idx;
 		std::vector<EdgeIdx> m_edges_idx;
 
 		//! Count
@@ -94,33 +97,33 @@ namespace cloth
 		HandleGroup(Json::Value& json, const std::vector<Cloth>& cloths);
 	};
 
-	struct MotionScript
-	{
-		enum Type
-		{
-			MOTION_TYPE_TRANSLATE,
-			MOTION_TYPE_ROTATE,
-			MOTION_TYPE_DELETE,
+	//struct MotionScript
+	//{
+	//	//enum Type
+	//	//{
+	//	//	MOTION_TYPE_TRANSLATE,
+	//	//	MOTION_TYPE_ROTATE,
+	//	//	MOTION_TYPE_DELETE,
 
-			MOTION_TYPE_COUNT
-		};
+	//	//	MOTION_TYPE_COUNT
+	//	//};
 
-		Type m_type;
+	//	//Type m_type;
 
-		Scalar m_begin;
-		Scalar m_end;
-		Vec3x m_origin;
-		Eigen::Vec3x m_axis;
-		Scalar m_amount; //< total distance or angle
+	//	Scalar m_begin;
+	//	Scalar m_end;
+	//	//Vec3x m_origin;
+	//	//Eigen::Vec3x m_axis;
+	//	Scalar m_amount; //< total distance or angle
 
-		Scalar m_ease_begin;
-		Scalar m_ease_end;
+	//	Scalar m_ease_begin;
+	//	Scalar m_ease_end;
 
-		HandleGroup* m_handle;
+	//	HandleGroup* m_handle;
 
-		MotionScript(Json::Value& json, std::vector<HandleGroup>& handles);
-		void update(Scalar current_time, Scalar dt);
-	};
+	//	MotionScript(Json::Value& json, std::vector<HandleGroup>& handles);
+	//	void update(Scalar current_time, Scalar dt);
+	//};
 
 	class /*EXPORT*/ ClothSim
 	{
@@ -156,11 +159,14 @@ namespace cloth
 	private:
 		void loadScene(const std::string& fname);
 
-		bool NewtonStep(Vec3x* v_next);
+		bool NewtonStep(const Vec3x* v_next, Vec3x* delta_v, std::vector<Scalar>& step_size);
 		
 		void evaluateGradientAndHessian(const Vec3x* x);
 		Scalar evaluateObjectiveValue(int i, const Vec3x* v_next);
-		Scalar lineSearch(int i, const Vec3x* gradient_dir, const Vec3x* descent_dir);
+		Scalar lineSearch(int i, const Vec3x* gradient_dir, const Vec3x* descent_dir, std::vector<Scalar>& step_size);
+
+		bool ProjectiveDynamics(const Vec3x* v_next, Vec3x* delta_v, std::vector<Scalar>& step_size);
+
 
 		//! Simulation parameters
 		Scalar m_time;
@@ -196,7 +202,6 @@ namespace cloth
 		//! Device pointors
 		Vec3x* d_x;
 		Vec3x* d_v;
-		Vec2x* d_uv;
 		Scalar* d_mass;
 
 		std::vector<StretchingConstraints> m_stretching_constraints;
@@ -205,7 +210,7 @@ namespace cloth
 
 		//! Animation
 		std::vector<HandleGroup> m_handle_groups;
-		std::vector<MotionScript> m_motion_scripts;
+		//std::vector<MotionScript> m_motion_scripts;
 
 		//! Solver variables
 		Vec3x* d_u;
@@ -213,7 +218,7 @@ namespace cloth
 		Vec3x* d_v_next;
 		Vec3x* d_delta_v;
 		Vec3x* d_g;
-		Vec3x* d_Kv;
+		Vec3x* d_Kv; // damping
 		Scalar* d_out;
 
 		std::vector<SparseMatrix> m_stiffness_matrix;
@@ -221,7 +226,7 @@ namespace cloth
 		std::vector<SparseMatrix> m_init_A;	// bending
 
 		std::vector<LinearSolver> m_solvers;
-		std::vector<CudaMvWrapper> m_mv;
+		std::vector<CudaMvWrapper> m_mv; // damping
 
 		std::vector<Scalar> m_step_size;
 		std::vector<bool> m_converged;

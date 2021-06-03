@@ -28,6 +28,7 @@ Implicit Euler integration -> nonlinear equation -> solved with Newton's method 
 ## TODO
 
 * [ ] **definiteness fix for stretching energy hessian**
+* [ ] replace `chol` with `cusolverRf` in Newton's method
 * [ ] **handle update and motion scripts**
 * [ ] output and checkpoint
 * [ ] **Neo-Hookean model**

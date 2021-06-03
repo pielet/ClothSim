@@ -59,8 +59,8 @@ namespace cloth
 
 		//! Add [value] to the diagonal of (i, j)-th 3x3 block
 		CUDA_MEMBER void atomicAddIdentity(int i, int j, Scalar value);
-		//! Add [value] to the i-th block diagonal
-		CUDA_MEMBER void atomicAddInIndentity(int i, Scalar value);
+		//! Add [value] to the diagonal of (i, i)-th 3x3 block
+		CUDA_MEMBER void atomicAddIdentity(int i, Scalar value);
 		//! Add mat to (i, j)-th 3x3 block
 		CUDA_MEMBER void atomicAddBlock(int i, int j, const Mat<Scalar, 3, 3>& mat);
 

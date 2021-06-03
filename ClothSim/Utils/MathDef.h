@@ -73,6 +73,8 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER Vec<T, n> operator-() const;
 		CUDA_CALLABLE_MEMBER Vec<T, n> operator+(const Vec<T, n>& other) const;
 		CUDA_CALLABLE_MEMBER Vec<T, n> operator+(T a) const;
+		CUDA_CALLABLE_MEMBER Vec<T, n> operator*(T a) const;
+		CUDA_CALLABLE_MEMBER Vec<T, n> operator/(T a) const;
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator=(const Vec<T, n>& other);
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator+=(T a);
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator+=(const Vec<T, n>& other);
@@ -80,8 +82,10 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator/=(T a);
 
 		CUDA_CALLABLE_MEMBER void setZero();
+		CUDA_CALLABLE_MEMBER T sum() const;
 		CUDA_CALLABLE_MEMBER T squareNorm() const;
 		CUDA_CALLABLE_MEMBER T norm() const;
+		CUDA_CALLABLE_MEMBER Vec<T, n> normalized() const;
 		CUDA_CALLABLE_MEMBER Vec<T, 3> cross(const Vec<T, 3>& other) const;
 		CUDA_CALLABLE_MEMBER T dot(const Vec<T, n>& other) const;
 
@@ -100,12 +104,14 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER const T& operator()(int i, int j) const { return value[i][j]; }
 
 		CUDA_CALLABLE_MEMBER Vec<T, m> col(int i) const;
+		CUDA_CALLABLE_MEMBER Vec<T, m> row(int i) const;
 		CUDA_CALLABLE_MEMBER void setCol(int i, const Vec<T, m>& vec);
 		CUDA_CALLABLE_MEMBER void setRow(int i, const Vec<T, n>& vec);
 		CUDA_CALLABLE_MEMBER void setZero();
 
 		CUDA_CALLABLE_MEMBER Mat<T, m, n> inverse() const;	// only used in Mat<Scalar, 2, 2>
 		CUDA_CALLABLE_MEMBER Mat<T, n, m> transpose() const;
+		CUDA_CALLABLE_MEMBER T sum() const;
 		CUDA_CALLABLE_MEMBER T trace() const;	// assert m == n
 		CUDA_CALLABLE_MEMBER T squaredNorm() const;
 
@@ -178,6 +184,24 @@ namespace cloth
 		Vec<T, n> vec;
 #pragma unroll
 		for (int i = 0; i < n; ++i) vec.value[i] = value[i] + a;
+		return vec;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n> Vec<T, n>::operator*(T a) const
+	{
+		Vec<T, n> vec;
+#pragma unroll
+		for (int i = 0; i < n; ++i) vec.value[i] = value[i] * a;
+		return vec;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n> Vec<T, n>::operator/(T a) const
+	{
+		Vec<T, n> vec;
+#pragma unroll
+		for (int i = 0; i < n; ++i) vec.value[i] = value[i] / a;
 		return vec;
 	}
 
@@ -271,6 +295,21 @@ namespace cloth
 	}
 
 	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER T Vec<T, n>::sum() const
+	{
+		T res = 0;
+#pragma unroll
+		for (int i = 0; i < n; ++i) res += value[i];
+		return res;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, n> Vec<T, n>::normalized() const
+	{
+		return *this / norm();
+	}
+
+	template <typename T, int n>
 	CUDA_CALLABLE_MEMBER Vec<T, 3> Vec<T, n>::cross(const Vec<T, 3>& other) const
 	{
 		assert(n == 3);
@@ -313,6 +352,15 @@ namespace cloth
 	}
 
 	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER Vec<T, m> Mat<T, m, n>::row(int ri) const
+	{
+		Vec<T, n> vec;
+#pragma unroll
+		for (int i = 0; i < n; ++i) vec.value[i] = value[ri][i];
+		return vec;
+	}
+
+	template <typename T, int m, int n>
 	CUDA_CALLABLE_MEMBER void Mat<T, m, n>::setCol(int ci, const Vec<T, m>& vec)
 	{
 #pragma unroll
@@ -346,6 +394,18 @@ namespace cloth
 			for (int j = 0; j < m; ++j)
 				mat.value[i][j] = value[j][i];
 		return mat;
+	}
+
+	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER T Mat<T, m, n>::sum() const
+	{
+		T res = 0;
+#pragma unroll
+		for (int i = 0; i < n; ++i)
+#pragma unroll 
+			for (int j = 0; j < m; ++j)
+				res += value[i][j];
+		return res;
 	}
 
 	template <typename T, int m, int n>

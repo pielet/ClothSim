@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30717.126
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ClothSim", "ClothSim\ClothSim.vcxproj", "{E23E08C9-3963-40B1-A6DB-C0CA82A331C8}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ClothSimulatorApp", "ClothSimulatorApp\ClothSimulatorApp.vcxproj", "{EB22B432-41FE-4386-B727-F3897A235C45}"
+	ProjectSection(ProjectDependencies) = postProject
+		{E23E08C9-3963-40B1-A6DB-C0CA82A331C8} = {E23E08C9-3963-40B1-A6DB-C0CA82A331C8}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E23E08C9-3963-40B1-A6DB-C0CA82A331C8}.Debug|x64.ActiveCfg = Debug|x64
+		{E23E08C9-3963-40B1-A6DB-C0CA82A331C8}.Debug|x64.Build.0 = Debug|x64
+		{E23E08C9-3963-40B1-A6DB-C0CA82A331C8}.Release|x64.ActiveCfg = Release|x64
+		{E23E08C9-3963-40B1-A6DB-C0CA82A331C8}.Release|x64.Build.0 = Release|x64
+		{EB22B432-41FE-4386-B727-F3897A235C45}.Debug|x64.ActiveCfg = Debug|x64
+		{EB22B432-41FE-4386-B727-F3897A235C45}.Debug|x64.Build.0 = Debug|x64
+		{EB22B432-41FE-4386-B727-F3897A235C45}.Release|x64.ActiveCfg = Release|x64
+		{EB22B432-41FE-4386-B727-F3897A235C45}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {DCBB3728-CF66-4C68-B47E-E1761EFF97D4}
+	EndGlobalSection
+EndGlobal

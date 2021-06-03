@@ -11,7 +11,7 @@ namespace cloth
 
 	ClothSim::ClothSim(): 
 		m_time(0), m_num_cloths(0), m_num_total_nodes(0), m_num_total_egdes(0), m_num_total_faces(0), m_num_handles(0),
-		d_x(NULL), d_v(NULL), d_uv(NULL), d_mass(NULL), 
+		d_x(NULL), d_v(NULL), d_mass(NULL), 
 		d_u(NULL), d_g(NULL), d_x_next(NULL), d_v_next(NULL), d_delta_v(NULL), d_Kv(NULL), d_out(NULL)
 	{
 		if (sizeof(Scalar) == 8)
@@ -26,7 +26,6 @@ namespace cloth
 	{
 		if (d_x) cudaFree(d_x);
 		if (d_v) cudaFree(d_v);
-		if (d_uv) cudaFree(d_uv);
 		if (d_mass) cudaFree(d_mass);
 
 		if (d_u) cudaFree(d_u);
@@ -51,7 +50,6 @@ namespace cloth
 		// initialize initial positions and constraints
 		cudaMalloc((void**)&d_x, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_v, n_nodes * sizeof(Vec3x));
-		cudaMalloc((void**)&d_uv, n_nodes * sizeof(Vec2x));
 		cudaMalloc((void**)&d_mass, n_nodes * sizeof(Scalar));
 
 		cudaMalloc((void**)&d_u, n_nodes * sizeof(Vec3x));
@@ -80,7 +78,8 @@ namespace cloth
 		m_num_total_egdes = 0;
 		m_num_total_nodes = m_offsets[m_num_cloths];
 
-		int n_edges, n_faces, n_fixed;
+		int n_edges, n_faces, n_fixed, n_uv;
+		Vec2x* d_uv;
 		std::vector<int> handles;
 		std::vector<Vec3x> targets;
 
@@ -93,28 +92,25 @@ namespace cloth
 			n_nodes = m_cloths[i].m_num_nodes;
 			n_faces = m_cloths[i].m_num_faces;
 			n_edges = m_cloths[i].m_num_edges;
+			n_uv = m_cloths[i].m_uv.size();
 
 			m_num_total_faces += n_faces;
 			m_num_total_egdes += n_edges;
 
 			cudaMemcpy(d_x + m_offsets[i], m_cloths[i].m_x.data(), n_nodes * sizeof(Vec3x), cudaMemcpyHostToDevice);
-			cudaMemcpy(d_uv + m_offsets[i], m_cloths[i].m_uv.data(), n_nodes * sizeof(Vec2x), cudaMemcpyHostToDevice);
+
+			cudaMalloc((void**)&d_uv, n_uv * sizeof(Vec2x));
+			cudaMemcpy(d_uv, m_cloths[i].m_uv.data(), n_uv * sizeof(Vec2x), cudaMemcpyHostToDevice);
 
 			m_stretching_constraints[i].initialize(
-				n_faces, &m_materials[m_cloths[i].m_param_idx], m_cloths[i].m_faces_idx.data(), &d_x[m_offsets[i]], &d_uv[m_offsets[i]], &d_mass[m_offsets[i]]);
+				n_faces, &m_materials[m_cloths[i].m_param_idx], m_cloths[i].m_faces_idx.data(), m_cloths[i].m_faces_uv_idx.data(),
+				d_uv, &d_mass[m_offsets[i]]); // store area in d_mass
+			cudaFree(d_uv);
+
 			m_bending_constraints[i].initialize(
 				n_edges, &m_materials[m_cloths[i].m_param_idx], m_cloths[i].m_edges_idx.data(), &d_x[m_offsets[i]]);
 
-			std::cout << "Finish initializing constraints.\n";
-
-			m_A[i].initialize(n_nodes, n_faces, n_edges, m_stretching_constraints[i].getIndices(), m_bending_constraints[i].getIndices());
-			m_init_A[i].initialize(m_A[i]);
-			m_stiffness_matrix[i].initialize(m_A[i]);
-
 			CublasCaller<Scalar>::scal(m_cublas_handle, n_nodes, &m_materials[m_cloths[i].m_param_idx].m_density, &d_mass[m_offsets[i]]);
-			m_bending_constraints[i].precompute(m_init_A[i]);
-
-			std::cout << "Finish preparing sparse matrix.\n";
 
 			// attachment constraints
 			handles.clear(); targets.clear(); n_fixed = 0;
@@ -128,11 +124,46 @@ namespace cloth
 				}
 			}
 			m_attachment_constraints[i].initialize(n_fixed, m_materials[m_cloths[i].m_param_idx].m_attachment_stiffness, handles.data(), targets.data());
-		
-			m_solvers[i].initialize(&m_A[i], LinearSolver::Diagnal);
-			m_mv[i].initialize(&m_stiffness_matrix[i], (Scalar*)&d_v_next[m_offsets[i]], (Scalar*)&d_Kv[m_offsets[i]]);
 
-			std::cout << "Finish initializing solver.\n";
+			std::cout << "Finish initializing constraints.\n";
+
+			switch (m_integration_method)
+			{
+			case cloth::INTEGRATION_METHOD_NEWTON:
+			{
+				m_A[i].initialize(n_nodes, n_faces, n_edges, m_stretching_constraints[i].getIndices(), m_bending_constraints[i].getIndices());
+				m_init_A[i].initialize(m_A[i]);
+				m_bending_constraints[i].precompute(m_init_A[i]);
+
+				// damping
+				m_stiffness_matrix[i].initialize(m_A[i]);
+				m_mv[i].initialize(&m_stiffness_matrix[i], (Scalar*)&d_v_next[m_offsets[i]], (Scalar*)&d_Kv[m_offsets[i]]);
+
+				std::cout << "Finish preparing sparse matrix.\n";
+
+				m_solvers[i].initialize(&m_A[i], LinearSolver::Diagnal);
+				std::cout << "Finish initializing solver.\n";
+
+				break;
+			}
+			case cloth::INTEGRATION_METHOD_PD:
+			{
+				m_A[i].initialize(n_nodes, n_faces, n_edges, m_stretching_constraints[i].getIndices(), m_bending_constraints[i].getIndices());
+				m_stretching_constraints[i].computeWeightedLaplacian(m_A[i]);
+				m_bending_constraints[i].precompute(m_A[i]);
+				m_attachment_constraints[i].computeWeightedLaplacian(m_A[i]);
+
+				Scalar h2 = m_dt * m_dt;
+				CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
+				m_A[i].addInDiagonal(&d_mass[m_offsets[i]]);
+
+				break;
+			}
+			case cloth::INTEGRATION_METHOD_LBFGS:
+				break;
+			default:
+				break;
+			}
 		}
 
 		cudaDeviceSynchronize();
@@ -147,72 +178,80 @@ namespace cloth
 			exit(-1);
 		}
 
-		Json::Value root;
-		fin >> root;
-		fin.close();
-
-		// load parameters
-		parse(m_duration, root["duration"], 1.0f);
-		parse(m_dt, root["dt"], 0.001f);
-
-		Json::Value value = root["nonlinear_solver"];
-		parse(m_integration_method, value["type"], INTEGRATION_METHOD_NEWTON);
-		parse(m_integration_iterations, value["iterations"], 5);
-		parse(m_enable_line_search, value["enable_line_search"], true);
-		parse(m_ls_alpha, value["ls_alpha"], 0.03f);
-		parse(m_ls_beta, value["ls_beta"], 0.5f);
-
-		value = root["linear_solver"];
-		parse(m_linear_solver_type, value["type"], LINEAR_SOLVER_DIRECT_LLT);
-		parse(m_linear_solver_iterations, value["iterations"], 200);
-		parse(m_linear_solver_error, value["error"], 1e-3f);
-
-		parse(m_gravity, root["gravity"]);
-		parse(m_enable_damping, root["enable_damping"], true);
-		parse(m_damping_alpha, root["damping_alpha"]);
-		parse(m_damping_beta, root["damping_beta"]);
-
-		m_materials.resize(root["parameters"].size());
-		for (int i = 0; i < root["parameters"].size(); ++i)
+		try
 		{
-			MaterialParameters& param = m_materials[i];
-			value = root["parameters"][i];
-			parse(param.m_type, value["mesh_type"], MESH_TYPE_StVK);
-			parse(param.m_youngs_modulus, value["youngs_modulus"], 2e12f);
-			parse(param.m_possion_ratio, value["poisson_ratio"], 0.3f);
-			parse(param.m_density, value["density"], 8.05f);
-			parse(param.m_thickness, value["thickness"], 0.1f);
-			parse(param.m_bending_stiffness, value["bending_stiffness"], 2e8f);
-			parse(param.m_attachment_stiffness, value["attachment_stiffness"], 1e10f);
-		}
-		std::cout << "Finish loading parameters.\n";
+			Json::Value root;
+			fin >> root;
+			fin.close();
 
-		// load cloth models
-		m_num_cloths = root["cloths"].size();
-		m_offsets.resize(m_num_cloths + 1);
-		m_offsets[0] = 0;
-		for (int i = 0; i < m_num_cloths; ++i)
-		{
-			m_cloths.emplace_back(root["cloths"][i]);
-			m_offsets[i + 1] = m_offsets[i] + m_cloths.back().m_num_nodes;
-		}
-		std::cout << "Finish loading cloth model(s)\n";
+			// load parameters
+			parse(m_duration, root["duration"], 1.0f);
+			parse(m_dt, root["dt"], 0.001f);
 
-		// load handles and animations
-		int json_idx = 0;
-		m_num_handles = 0;
-		for (int i = 0; i < root["handles"].size(); ++i)
-		{
-			m_handle_groups.emplace_back(root["handles"][i], m_cloths);
-			m_num_handles += m_handle_groups.back().m_num_nodes;
-		}
-		std::cout << "Finish loading handles.\n";
+			Json::Value value = root["nonlinear_solver"];
+			parse(m_integration_method, value["type"], INTEGRATION_METHOD_NEWTON);
+			parse(m_integration_iterations, value["iterations"], 5);
+			parse(m_enable_line_search, value["enable_line_search"], true);
+			parse(m_ls_alpha, value["ls_alpha"], 0.03f);
+			parse(m_ls_beta, value["ls_beta"], 0.5f);
 
-		for (int i = 0; i < root["motions"].size(); ++i)
-		{
-			m_motion_scripts.push_back(MotionScript(root["motions"][i], m_handle_groups));
+			value = root["linear_solver"];
+			parse(m_linear_solver_type, value["type"], LINEAR_SOLVER_DIRECT_LLT);
+			parse(m_linear_solver_iterations, value["iterations"], 200);
+			parse(m_linear_solver_error, value["error"], 1e-3f);
+
+			parse(m_gravity, root["gravity"]);
+			parse(m_enable_damping, root["enable_damping"], true);
+			parse(m_damping_alpha, root["damping_alpha"]);
+			parse(m_damping_beta, root["damping_beta"]);
+
+			m_materials.resize(root["parameters"].size());
+			for (int i = 0; i < root["parameters"].size(); ++i)
+			{
+				MaterialParameters& param = m_materials[i];
+				value = root["parameters"][i];
+				parse(param.m_type, value["mesh_type"], MESH_TYPE_StVK);
+				parse(param.m_youngs_modulus, value["youngs_modulus"], 2e12f);
+				parse(param.m_possion_ratio, value["poisson_ratio"], 0.3f);
+				parse(param.m_density, value["density"], 8.05f);
+				parse(param.m_thickness, value["thickness"], 0.1f);
+				parse(param.m_bending_stiffness, value["bending_stiffness"], 2e8f);
+				parse(param.m_attachment_stiffness, value["attachment_stiffness"], 1e10f);
+			}
+			std::cout << "Finish loading parameters.\n";
+
+			// load cloth models
+			m_num_cloths = root["cloths"].size();
+			m_offsets.resize(m_num_cloths + 1);
+			m_offsets[0] = 0;
+			for (int i = 0; i < m_num_cloths; ++i)
+			{
+				m_cloths.emplace_back(root["cloths"][i]);
+				m_offsets[i + 1] = m_offsets[i] + m_cloths.back().m_num_nodes;
+			}
+			std::cout << "Finish loading cloth model(s).\n";
+
+			// load handles and animations
+			int json_idx = 0;
+			m_num_handles = 0;
+			for (int i = 0; i < root["handles"].size(); ++i)
+			{
+				m_handle_groups.emplace_back(root["handles"][i], m_cloths);
+				m_num_handles += m_handle_groups.back().m_num_nodes;
+			}
+			std::cout << "Finish loading handles.\n";
+
+			//for (int i = 0; i < root["motions"].size(); ++i)
+			//{
+			//	m_motion_scripts.emplace_back(root["motions"][i], m_handle_groups);
+			//}
+			//std::cout << "Finish loading motions.\n";
 		}
-		std::cout << "Finish loading motions.\n";
+		catch (Json::RuntimeError e)
+		{
+			std::cerr << "Json parse failed at " << e.what() << "EXIT.";
+			exit(-1);
+		}
 	}
 
 	Cloth::Cloth(Json::Value& json)
@@ -238,6 +277,7 @@ namespace cloth
 		Eigen::Vec3x pos;
 		Vec2x uv;
 		FaceIdx face_idx;
+		FaceIdx face_uv_idx;
 
 		std::string line, token;
 		while (std::getline(fin, line))
@@ -257,11 +297,11 @@ namespace cloth
 			}
 			if (token == "f")
 			{
-				if (line.find('/') == std::string::npos)
-					iss >> face_idx(0) >> face_idx(1) >> face_idx(2);
-				else sscanf(line.c_str(), "f %d/%d %d/%d %d/%d", &face_idx(0), &face_idx(0), &face_idx(1), &face_idx(1), &face_idx(2), &face_idx(2));
+				sscanf(line.c_str(), "f %d/%d %d/%d %d/%d", &face_idx(0), &face_uv_idx(0), &face_idx(1), &face_uv_idx(1), &face_idx(2), &face_uv_idx(2));
 				face_idx += -1;
+				face_uv_idx += -1;
 				m_faces_idx.push_back(face_idx);
+				m_faces_uv_idx.push_back(face_uv_idx);
 			}
 		}
 		m_num_nodes = m_x.size();
@@ -331,7 +371,7 @@ namespace cloth
 		parse(start, json["start_idx"]);
 		parse(end, json["end_idx"]);
 
-		for (int i = start; i < end; ++i)
+		for (int i = start; i <= end; ++i)
 		{
 			m_indices.push_back(i);
 			m_targets.push_back(cloths[m_cloth_idx].m_x[i]);
@@ -356,84 +396,84 @@ namespace cloth
 		m_activate = true;
 	}
 
-	MotionScript::MotionScript(Json::Value& json, std::vector<HandleGroup>& handles)
-	{
-		std::string type = json["type"].asString();
+	//MotionScript::MotionScript(Json::Value& json, std::vector<HandleGroup>& handles)
+	//{
+	//	//std::string type = json["type"].asString();
 
-		int handle_idx;
-		parse(handle_idx, json["group"], 0);
-		if (handle_idx >= handles.size())
-		{
-			std::cerr << "[MotionScript::MotionScript] Group index exceeds actual handle group size." << std::endl;
-			exit(-1);
-		}
-		m_handle = &handles[handle_idx];
+	//	//int handle_idx;
+	//	//parse(handle_idx, json["group"], 0);
+	//	//if (handle_idx >= handles.size())
+	//	//{
+	//	//	std::cerr << "[MotionScript::MotionScript] Group index exceeds actual handle group size." << std::endl;
+	//	//	exit(-1);
+	//	//}
+	//	//m_handle = &handles[handle_idx];
 
-		parse(m_begin, json["begin"]);
-		parse(m_end, json["end"]);
-		m_ease_begin = m_ease_end = (m_end - m_begin) / 5;
+	//	//parse(m_begin, json["begin"]);
+	//	//parse(m_end, json["end"]);
+	//	//m_ease_begin = m_ease_end = (m_end - m_begin) / 5;
 
-		if (type == "translate")
-		{
-			m_type = MOTION_TYPE_TRANSLATE;
-			parse(m_axis, json["direction"]);
-			parse(m_amount, json["distance"]);
-			m_axis.normalize();
-		}
-		else if (type == "rotate")
-		{
-			m_type = MOTION_TYPE_ROTATE;
-			parse(m_origin, json["origin"], m_handle->m_center);
-			parse(m_axis, json["axis"]);
-			parse(m_amount, json["angle"]);
-			m_axis.normalize();
-		}
-		else if (type == "delete")
-		{
-			m_type = MOTION_TYPE_DELETE;
-		}
-		else
-		{
-			std::cerr << "[MotionScript::MotionScript] Unknown motion type : " << type << std::endl;
-			exit(-1);
-		}
-	}
+	//	//if (type == "translate")
+	//	//{
+	//	//	m_type = MOTION_TYPE_TRANSLATE;
+	//	//	parse(m_axis, json["direction"]);
+	//	//	parse(m_amount, json["distance"]);
+	//	//	m_axis.normalize();
+	//	//}
+	//	//else if (type == "rotate")
+	//	//{
+	//	//	m_type = MOTION_TYPE_ROTATE;
+	//	//	parse(m_origin, json["origin"], m_handle->m_center);
+	//	//	parse(m_axis, json["axis"]);
+	//	//	parse(m_amount, json["angle"]);
+	//	//	m_axis.normalize();
+	//	//}
+	//	//else if (type == "delete")
+	//	//{
+	//	//	m_type = MOTION_TYPE_DELETE;
+	//	//}
+	//	//else
+	//	//{
+	//	//	std::cerr << "[MotionScript::MotionScript] Unknown motion type : " << type << std::endl;
+	//	//	exit(-1);
+	//	//}
+	//}
 
-	Scalar cubic_ease_function(const Scalar& t, const Scalar& t0, const Scalar& t1, const Scalar& ta, const Scalar& tb, const Scalar& L)
-	{
-		Scalar yh = (L * 2.0) / (t1 - t0 + tb - ta);
-		if (t < t0 || t > t1) return 0.0;
-		else {
-			if (t < ta) return (yh * (t0 - t) * (t0 - t) * (t0 - 3.0 * ta + 2.0 * t)) / ((t0 - ta) * (t0 - ta) * (t0 - ta));
-			else if (t > tb) return (yh * (t1 - t) * (t1 - t) * (t1 - 3.0 * tb + 2.0 * t)) / ((t1 - tb) * (t1 - tb) * (t1 - tb));
-			else return yh;
-		}
-	}
+	//Scalar cubic_ease_function(const Scalar& t, const Scalar& t0, const Scalar& t1, const Scalar& ta, const Scalar& tb, const Scalar& L)
+	//{
+	//	Scalar yh = (L * 2.0) / (t1 - t0 + tb - ta);
+	//	if (t < t0 || t > t1) return 0.0;
+	//	else {
+	//		if (t < ta) return (yh * (t0 - t) * (t0 - t) * (t0 - 3.0 * ta + 2.0 * t)) / ((t0 - ta) * (t0 - ta) * (t0 - ta));
+	//		else if (t > tb) return (yh * (t1 - t) * (t1 - t) * (t1 - 3.0 * tb + 2.0 * t)) / ((t1 - tb) * (t1 - tb) * (t1 - tb));
+	//		else return yh;
+	//	}
+	//}
 
-	void MotionScript::update(Scalar current_time, Scalar dt)
-	{
-		if (current_time > m_begin && current_time < m_end)
-		{
-			if (m_type == MOTION_TYPE_DELETE) m_handle->m_activate = false;
-			else
-			{
-				for (int i = 0; i < m_handle->m_num_nodes; ++i)
-				{
-					Scalar vel = cubic_ease_function(current_time, m_begin, m_end, m_begin + m_ease_begin, m_end - m_ease_end, m_amount);
-					
-					if (m_type == MOTION_TYPE_TRANSLATE)
-					{
-						m_handle->m_targets[i] += vel * dt * Vec3x(m_axis);
-					}
-					else if (m_type == MOTION_TYPE_ROTATE)
-					{
-						Eigen::AngleAxisx rot(vel * dt, m_axis);
-						m_handle->m_targets[i] = Vec3x(rot * Eigen::Vec3x((m_handle->m_targets[i] - m_origin).value)) + m_origin;
-					}
-				}
-			}
-		}
-	}
+	//void MotionScript::update(Scalar current_time, Scalar dt)
+	//{
+	//	if (current_time > m_begin && current_time < m_end)
+	//	{
+	//		//if (m_type == MOTION_TYPE_DELETE) m_handle->m_activate = false;
+	//		//else
+	//		//{
+	//		//	for (int i = 0; i < m_handle->m_num_nodes; ++i)
+	//		//	{
+	//		//		Scalar vel = cubic_ease_function(current_time, m_begin, m_end, m_begin + m_ease_begin, m_end - m_ease_end, m_amount);
+	//		//		
+	//		//		if (m_type == MOTION_TYPE_TRANSLATE)
+	//		//		{
+	//		//			m_handle->m_targets[i] += vel * dt * Vec3x(m_axis);
+	//		//		}
+	//		//		else if (m_type == MOTION_TYPE_ROTATE)
+	//		//		{
+	//		//			Eigen::AngleAxisx rot(vel * dt, m_axis);
+	//		//			m_handle->m_targets[i] = Vec3x(rot * Eigen::Vec3x((m_handle->m_targets[i] - m_origin).value)) + m_origin;
+	//		//		}
+	//		//	}
+	//		//}
+	//	}
+	//}
 
 	__global__ void computeInitialGuessKernel(int n_nodes, Scalar h, const Vec3x* v, Vec3x gravity_accelaration, Vec3x* u)
 	{
@@ -449,25 +489,25 @@ namespace cloth
 		if (m_time > m_duration) return false;
 
 		// update handles
-		for (int i = 0; i < m_motion_scripts.size(); ++i) m_motion_scripts[i].update(m_time, m_dt);
+		//for (int i = 0; i < m_motion_scripts.size(); ++i) m_motion_scripts[i].update(m_time, m_dt);
 
-		std::vector<int> handles;
-		std::vector<Vec3x> targets;
-		int n_fixed;
-		for (int i = 0; i < m_num_cloths; ++i)
-		{
-			handles.clear(); targets.clear(); n_fixed = 0;
-			for (auto iter = m_handle_groups.begin(); iter != m_handle_groups.end(); ++iter)
-			{
-				if (iter->m_cloth_idx == i && iter->m_activate)
-				{
-					n_fixed += iter->m_num_nodes;
-					handles.insert(handles.end(), iter->m_indices.begin(), iter->m_indices.end());
-					targets.insert(targets.end(), iter->m_targets.begin(), iter->m_targets.end());
-				}
-			}
-			m_attachment_constraints[i].update(n_fixed, handles.data(), targets.data());
-		}
+		//std::vector<int> handles;
+		//std::vector<Vec3x> targets;
+		//int n_fixed;
+		//for (int i = 0; i < m_num_cloths; ++i)
+		//{
+		//	handles.clear(); targets.clear(); n_fixed = 0;
+		//	for (auto iter = m_handle_groups.begin(); iter != m_handle_groups.end(); ++iter)
+		//	{
+		//		if (iter->m_cloth_idx == i && iter->m_activate)
+		//		{
+		//			n_fixed += iter->m_num_nodes;
+		//			handles.insert(handles.end(), iter->m_indices.begin(), iter->m_indices.end());
+		//			targets.insert(targets.end(), iter->m_targets.begin(), iter->m_targets.end());
+		//		}
+		//	}
+		//	m_attachment_constraints[i].update(n_fixed, handles.data(), targets.data());
+		//}
 
 		// Computes initial guess
 		computeInitialGuessKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (m_num_total_nodes, m_dt, d_v, m_gravity, d_u);
@@ -481,14 +521,17 @@ namespace cloth
 
 		// Integration iteration
 		std::cout << "[Start integration]\n";
-		bool converged = false;
-		for (int s = 0; s < m_integration_iterations; ++s)
+		bool all_converged = false;
+		for (int k = 0; k < m_integration_iterations; ++k)
 		{
-			std::cout << " Iteration " << s + 1 << ":  ";
+			std::cout << " Iteration " << k + 1 << ":  ";
 			switch (m_integration_method)
 			{
 			case INTEGRATION_METHOD_NEWTON:
-				converged = NewtonStep(d_v);
+				all_converged = NewtonStep(d_v, d_delta_v, m_step_size);
+				break;
+			case INTEGRATION_METHOD_PD:
+				
 				break;
 			case INTEGRATION_METHOD_LBFGS:
 				break;
@@ -500,7 +543,7 @@ namespace cloth
 				if (!m_converged[i])
 					CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &m_step_size[i], (Scalar*)d_delta_v, (Scalar*)d_v);
 			}
-			if (converged) break;
+			if (all_converged) break;
 		}
 
 		// Updates states
@@ -520,7 +563,7 @@ namespace cloth
 		return true;
 	}
 
-	bool ClothSim::NewtonStep(Vec3x* v_next)
+	bool ClothSim::NewtonStep(const Vec3x* v_next, Vec3x* delta_v, std::vector<Scalar>& step_sizes)
 	{
 		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * m_num_total_nodes, (Scalar*)d_x, (Scalar*)d_x_next);
 		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &m_dt, (Scalar*)v_next, (Scalar*)d_x_next);
@@ -546,25 +589,25 @@ namespace cloth
 		evaluateGradientAndHessian(d_x_next);
 
 		std::vector<bool> status(m_num_cloths);
-		cudaMemset(d_delta_v, 0, m_num_total_nodes * sizeof(Vec3x));
+		cudaMemset(delta_v, 0, m_num_total_nodes * sizeof(Vec3x));
 		for (int i = 0; i < m_num_cloths; ++i)
 		{
 			// Linear solver
 			if (!m_converged[i])
 			{
 				if (m_linear_solver_type == LINEAR_SOLVER_DIRECT_LLT)
-					status[i] = m_solvers[i].cholesky((Scalar*)&d_g[m_offsets[i]], (Scalar*)&d_delta_v[m_offsets[i]]);
+					status[i] = m_solvers[i].cholesky((Scalar*)&d_g[m_offsets[i]], (Scalar*)&delta_v[m_offsets[i]]);
 				else 
-					status[i] = m_solvers[i].conjugateGradient((Scalar*)&d_g[m_offsets[i]], (Scalar*)&d_delta_v[m_offsets[i]],
+					status[i] = m_solvers[i].conjugateGradient((Scalar*)&d_g[m_offsets[i]], (Scalar*)&delta_v[m_offsets[i]],
 						m_linear_solver_iterations, m_linear_solver_error);
 			}
 		}
 
 		Scalar minus_one = -1;
-		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * m_num_total_nodes, &minus_one, (Scalar*)d_delta_v);
+		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * m_num_total_nodes, &minus_one, (Scalar*)delta_v);
 
 		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), d_delta_v, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
+		//cudaMemcpy(test.data(), delta_v, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
 		//std::cout << "delta v: ";
 		//for (int i = 0; i < test.size(); ++i) {
 		//	std::cout << test[i] << ' ';
@@ -574,9 +617,9 @@ namespace cloth
 		std::vector<Scalar> obj_values(m_num_cloths, 0.f);
 		for (int i = 0; i < m_num_cloths; ++i)
 		{
-			if (!m_converged[i]) obj_values[i] = lineSearch(i, d_g, d_delta_v);
-			if (m_step_size[i] < 1e-5f) m_converged[i] = true;
-			std::cout << "  step size " << m_step_size[i] << std::endl;
+			if (!m_converged[i]) obj_values[i] = lineSearch(i, d_g, delta_v, step_sizes);
+			if (step_sizes[i] < 1e-5f) m_converged[i] = true;
+			std::cout << "  step size " << step_sizes[i] << std::endl;
 		}
 
 		bool all_pass = true;
@@ -612,9 +655,9 @@ namespace cloth
 		{
 			if (!m_converged[i])
 			{
-				//m_A[i].setZero();
-				m_A[i].assign(m_init_A[i]); // bending hessian
-				m_bending_constraints[i].computeGradiant(&x[m_offsets[i]], &d_g[m_offsets[i]]); // bending gradient
+				m_A[i].setZero();
+				//m_A[i].assign(m_init_A[i]); // bending hessian
+				//m_bending_constraints[i].computeGradiant(&x[m_offsets[i]], &d_g[m_offsets[i]]); // bending gradient
 				m_stretching_constraints[i].computeGradiantAndHessian(&x[m_offsets[i]], &d_g[m_offsets[i]], m_A[i], true);
 				m_attachment_constraints[i].computeGradiantAndHessian(&x[m_offsets[i]], &d_g[m_offsets[i]], m_A[i]);
 
@@ -659,7 +702,6 @@ namespace cloth
 		//}
 		//std::cout << "\n\n";
 
-		// \grad^2 f = M + h^2 * \grad^2 E
 		// \grad^2 f = M + h^2 * \grad^2 E
 		// \grad^2 f = M + h^2 * \grad^2 E + h * (\alpha M + \beta K) = (1 + h * \alpha) M + (h * \beta) K + (h*h) \grad^2 E
 		Scalar h2 = m_dt * m_dt, h_beta = m_dt * m_damping_beta;
@@ -736,13 +778,13 @@ namespace cloth
 
 		Scalar inner_energy = 0;
 		inner_energy += m_attachment_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
-		inner_energy += m_bending_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
+		//inner_energy += m_bending_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
 		inner_energy += m_stretching_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
 
 		return inertia_energy + inner_energy;
 	}
 
-	Scalar ClothSim::lineSearch(int i, const Vec3x* gradient_dir, const Vec3x* descent_dir)
+	Scalar ClothSim::lineSearch(int i, const Vec3x* gradient_dir, const Vec3x* descent_dir, std::vector<Scalar>& step_sizes)
 	{
 		int n_nodes = getNumNodes(i);
 		Scalar current_obj_value = evaluateObjectiveValue(i, &d_v[m_offsets[i]]);
@@ -753,7 +795,7 @@ namespace cloth
 			Scalar grad_dot_desc;
 			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_nodes, (Scalar*)gradient_dir, (Scalar*)descent_dir, &grad_dot_desc);
 
-			Scalar& step_size = m_step_size[i];
+			Scalar& step_size = step_sizes[i];
 			step_size = std::min(1.f, 2 * std::max(1e-5f, step_size)) / m_ls_beta;
 
 			do {
@@ -777,6 +819,11 @@ namespace cloth
 			else return next_obj_value;
 		}
 		else return current_obj_value;
+	}
+
+	bool ClothSim::ProjectiveDynamics(const Vec3x* v_next, Vec3x* delta_v, std::vector<Scalar>& step_size)
+	{
+		return false;
 	}
 
 	const FaceIdx* ClothSim::getFaceIndices(int i) const

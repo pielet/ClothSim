@@ -467,7 +467,7 @@ namespace cloth
 		}
 	}
 
-	CUDA_MEMBER void SparseMatrixWrapper::atomicAddInIndentity(int i, Scalar value)
+	CUDA_MEMBER void SparseMatrixWrapper::atomicAddIdentity(int i, Scalar value)
 	{
 #pragma unroll
 		for (int j = 0; j < 3; ++j)

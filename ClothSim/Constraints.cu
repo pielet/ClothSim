@@ -39,22 +39,23 @@ namespace cloth
 		return m_indices;
 	}
 
-	__global__ void stretchingInitializeKernel(int n_faces, const FaceIdx* indices, const Vec3x* x, const Vec2x* uv, 
+	__global__ void stretchingInitializeKernel(int n_faces, const FaceIdx* indices, const FaceIdx* uv_indices, const Vec2x* uv, 
 		Scalar* areas, Mat2x* Dms, Mat2x* Dm_invs, Scalar* mass)
 	{
 		int i = blockDim.x * blockIdx.x + threadIdx.x;
 		if (i >= n_faces) return;
 
 		FaceIdx idx = indices[i];
-		Vec3x p0 = x[idx(0)], p1 = x[idx(1)], p2 = x[idx(2)];
-		Vec2x u0 = uv[idx(0)], u1 = uv[idx(1)], u2 = uv[idx(2)];
+		FaceIdx uv_idx = uv_indices[i];
+		Vec2x u0 = uv[uv_idx(0)], u1 = uv[uv_idx(1)], u2 = uv[uv_idx(2)];
+		Vec2x e0 = u0 - u2, e1 = u1 - u2;
 
-		Scalar area = 0.5f * ((p1 - p0).cross(p2 - p0).norm());
+		Scalar area = 0.5f * fabs(e0(0) * e1(1) - e0(1) * e1(0));
 		areas[i] = area;
 
 		Mat2x Dm;
-		Dm.setCol(0, u0 - u2);
-		Dm.setCol(1, u1 - u2);
+		Dm.setCol(0, e0);
+		Dm.setCol(1, e1);
 		Dms[i] = Dm;
 		Dm_invs[i] = Dm.inverse();
 
@@ -64,8 +65,8 @@ namespace cloth
 		atomicAdd(&mass[idx(2)], area);
 	}
 
-	void StretchingConstraints::initialize(int n_faces, const MaterialParameters* material, const FaceIdx* indices, 
-		const Vec3x* x, const Vec2x* uv, Scalar* mass)
+	void StretchingConstraints::initialize(int n_faces, const MaterialParameters* material, const FaceIdx* indices, const FaceIdx* uv_indices,
+		const Vec2x* uv, Scalar* mass)
 	{
 		m_num_faces = n_faces;
 
@@ -76,15 +77,65 @@ namespace cloth
 		m_lambda = material->m_thickness * material->m_youngs_modulus * material->m_possion_ratio /
 			(1 + material->m_possion_ratio) / (1 - 2 * material->m_possion_ratio);
 
+		switch (m_type)
+		{
+		case cloth::MESH_TYPE_StVK:
+			m_laplacian_coeff = 2 * m_mu + 1.0033 * m_lambda;
+			break;
+		case cloth::MESH_TYPE_NEO_HOOKEAN:
+			m_laplacian_coeff = 2.0066 * m_mu + 1.0122 * m_lambda;
+			break;
+		case cloth::MESH_TYPE_DATA_DRIVEN:
+			break;
+		default:
+			break;
+		}
+
 		cudaMalloc((void**)&m_indices, n_faces * sizeof(FaceIdx));
 		cudaMalloc((void**)&m_areas, n_faces * sizeof(Scalar));
 		cudaMalloc((void**)&m_Dm, n_faces * sizeof(Mat2x));
 		cudaMalloc((void**)&m_Dm_inv, n_faces * sizeof(Mat2x));
 		cudaMalloc((void**)&m_energy, n_faces * sizeof(Scalar));
 
+		FaceIdx* d_uv_indices;
+		cudaMalloc((void**)&d_uv_indices, n_faces * sizeof(FaceIdx));
+
 		cudaMemcpy(m_indices, indices, n_faces * sizeof(FaceIdx), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_uv_indices, uv_indices, n_faces * sizeof(FaceIdx), cudaMemcpyHostToDevice);
 		stretchingInitializeKernel <<< get_block_num(n_faces), g_block_dim >>> (
-			n_faces, m_indices, x, uv, m_areas, m_Dm, m_Dm_inv, mass);
+			n_faces, m_indices, d_uv_indices, uv, m_areas, m_Dm, m_Dm_inv, mass);
+
+		cudaFree(d_uv_indices);
+	}
+
+	__global__ void computeStretchingWeightedLaplacianKernel(int n_stretch, Scalar laplacian_coeff, const FaceIdx* indices, 
+		const Scalar* areas, const Mat2x* Dm_invs, SparseMatrixWrapper L)
+	{
+		int fid = blockIdx.x * blockDim.x + threadIdx.x;
+		if (fid >= n_stretch) return;
+
+		FaceIdx idx = indices[fid];
+		Mat2x Dm_inv = Dm_invs[fid];
+		Mat2x local_L = areas[fid] * laplacian_coeff * Dm_inv * Dm_inv.transpose();
+
+		for (int i = 0; i < 2; ++i) for (int j = 0; j < 2; ++j)
+		{
+			L.atomicAddIdentity(idx(i), idx(j), local_L(i, j));
+		}
+
+		for (int i = 0; i < 2; ++i)
+		{
+			Scalar sum = -local_L.row(i).sum();
+			L.atomicAddIdentity(idx(2), idx(i), sum);
+			L.atomicAddIdentity(idx(i), idx(2), sum);
+		}
+
+		L.atomicAddIdentity(idx(2), idx(2), local_L.sum());
+	}
+
+	void StretchingConstraints::computeWeightedLaplacian(SparseMatrix& Laplacian)
+	{
+		computeStretchingWeightedLaplacianKernel <<< get_block_num(m_num_faces), g_block_dim >>> (m_num_faces, m_laplacian_coeff, m_indices, m_areas, m_Dm_inv, Laplacian);
 	}
 
 	__global__ void computeStretchingEnergyStVKKernel(int n_faces, Scalar mu, Scalar lambda, const FaceIdx* indices, const Scalar* areas, 
@@ -212,13 +263,14 @@ namespace cloth
 	/********************************* BENDING CONSTRAINTS ****************************/
 
 	BendingConstraints::BendingConstraints():
-		m_indices(NULL), m_stiffness(NULL), m_K(NULL), m_energy(NULL), m_handle(NULL), m_num_edges(0)
+		m_indices(NULL), m_flat_stiffness(NULL), m_nonflat_stiffness(NULL), m_K(NULL), m_energy(NULL), m_handle(NULL), m_num_edges(0)
 	{}
 
 	BendingConstraints::~BendingConstraints()
 	{
 		if (m_indices) cudaFree(m_indices);
-		if (m_stiffness) cudaFree(m_stiffness);
+		if (m_flat_stiffness) cudaFree(m_flat_stiffness);
+		if (m_nonflat_stiffness) cudaFree(m_nonflat_stiffness);
 		if (m_K) cudaFree(m_K);
 		if (m_energy) cudaFree(m_energy);
 
@@ -230,30 +282,33 @@ namespace cloth
 		return m_indices;
 	}
 
-	__global__ void bendingInitializeKernel(int n_edges, Scalar scalar, const EdgeIdx* indices, const Vec3x* x, 
-		Scalar* stiffness, Vec4x* Ks)
+	__global__ void bendingInitializeKernel(int n_edges, Scalar stiffness, const EdgeIdx* indices, const Vec3x* x,
+		Scalar* flat_stiffness, Scalar* nonflat_stiffness, Vec4x* Ks)
 	{
 		int i = blockIdx.x * blockDim.x + threadIdx.x;
 		if (i >= n_edges) return;
 
 		EdgeIdx idx = indices[i];
+
 		Vec3x p0 = x[idx(0)], p1 = x[idx(1)], p2 = x[idx(2)], p3 = x[idx(3)];
+		Vec3x e0 = p1 - p0, e1 = p2 - p0, e2 = p3 - p0;
 
-		Scalar l2 = (p1 - p0).squareNorm();
-		Scalar a0 = (p2 - p0).cross(p1 - p0).norm(), 
-			   a1 = (p3 - p0).cross(p1 - p0).norm();
-		Scalar tri0 = l2 / a0, tri1 = l2 / a1;
+		Scalar e0_norm2 = e0.squareNorm();
+		Vec3x n0 = e0.cross(e1),  n1 = (e2).cross(e0);
+		Scalar a0 = n0.norm(), a1 = n1.norm();
+		Scalar e0_inv_h0 = e0_norm2 / a0, e0_inv_h1 = e0_norm2 / a1;
 
-		Scalar alpha0 = (p2 - p0).dot(p1 - p0) / l2,
-			alpha1 = (p3 - p0).dot(p1 - p0) / l2,
-			beta0 = 1 - alpha0, beta1 = 1 - alpha1;
+		Scalar s = e1.dot(e0) / e0_norm2, t = e2.dot(e0) / e0_norm2;
 
-		Ks[i](0) = beta0 * tri0 + beta1 * tri1;
-		Ks[i](1) = alpha0 * tri0 + alpha1 * tri1;
-		Ks[i](2) = -tri0;
-		Ks[i](3) = -tri1;
+		Ks[i](0) = (1 - s) * e0_inv_h0 + (1 - t) * e0_inv_h1;
+		Ks[i](1) = s * e0_inv_h0 + t * e0_inv_h1;
+		Ks[i](2) = -e0_inv_h0;
+		Ks[i](3) = -e0_inv_h1;
 
-		stiffness[i] = 6 / (a0 + a1) * scalar;
+		Scalar cos_rest_angle = n0.normalized().dot(n1.normalized());
+		flat_stiffness[i] = 6 * cos_rest_angle / (a0 + a1) * stiffness;
+		Scalar triple_product = e0.cross(e1).dot(e2) * stiffness;
+		nonflat_stiffness[i] = -6 * e0_norm2 * e0_norm2 / ((a0 + a1) * a0 * a0 * a1 * a1) * triple_product * stiffness;
 	}
 
 	void BendingConstraints::initialize(int n_edges, const MaterialParameters* material, const EdgeIdx* indices, const Vec3x* x)
@@ -263,38 +318,37 @@ namespace cloth
 		cublasCreate(&m_handle);
 
 		cudaMalloc((void**)&m_indices, n_edges * sizeof(EdgeIdx));
-		cudaMalloc((void**)&m_stiffness, n_edges * sizeof(Scalar));
+		cudaMalloc((void**)&m_flat_stiffness, n_edges * sizeof(Scalar));
+		cudaMalloc((void**)&m_nonflat_stiffness, n_edges * sizeof(Scalar));
 		cudaMalloc((void**)&m_K, n_edges * sizeof(Vec4x));
 		cudaMalloc((void**)&m_energy, n_edges * sizeof(Scalar));
 
 		cudaMemcpy(m_indices, indices, n_edges * sizeof(EdgeIdx), cudaMemcpyHostToDevice);
 		bendingInitializeKernel <<< get_block_num(n_edges), g_block_dim >>> (
-			n_edges, material->m_bending_stiffness, m_indices, x, m_stiffness, m_K);
+			n_edges, material->m_bending_stiffness, m_indices, x, m_flat_stiffness, m_nonflat_stiffness, m_K);
 	}
 
-	__global__ void precomputeKernel(int n_edges, const EdgeIdx* indices, const Scalar* stiffness, const Vec4x* Ks, SparseMatrixWrapper A)
+	__global__ void precomputeKernel(int n_edges, const EdgeIdx* indices, const Scalar* flat_stiffness, const Vec4x* Ks, SparseMatrixWrapper A)
 	{
 		int eid = blockIdx.x * blockDim.x + threadIdx.x;
 		if (eid >= n_edges) return;
 
 		EdgeIdx idx = indices[eid];
 		Vec4x K = Ks[eid];
-		Scalar stiff = stiffness[eid];
-#pragma unroll
-		for (int i = 0; i < 4; ++i)
+		Scalar stiffness = flat_stiffness[eid];
+
+		for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j)
 		{
-#pragma unroll
-			for (int j = 0; j < 4; ++j)
-				A.atomicAddIdentity(idx(i), idx(j), stiff * K(i) * K(j));
+			A.atomicAddIdentity(idx(i), idx(j), stiffness * K(i) * K(j));
 		}
 	}
 
 	void BendingConstraints::precompute(SparseMatrix& sparse_mat)
 	{
-		precomputeKernel <<< get_block_num(m_num_edges), g_block_dim >>> (m_num_edges, m_indices, m_stiffness, m_K, sparse_mat);
+		precomputeKernel <<< get_block_num(m_num_edges), g_block_dim >>> (m_num_edges, m_indices, m_flat_stiffness, m_K, sparse_mat);
 	}
 
-	__global__ void computeBendingEnergyKernel(int n_edges, const Scalar* stiffness, const EdgeIdx* indices, const Vec4x* Ks, 
+	__global__ void computeBendingEnergyKernel(int n_edges, const Scalar* flat_stiffness, const Scalar* nonflat_stiffness, const EdgeIdx* indices, const Vec4x* Ks, 
 		const Vec3x* x, Scalar* energies)
 	{
 		int eid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -302,32 +356,33 @@ namespace cloth
 
 		EdgeIdx idx = indices[eid];
 		Vec3x p[4];
-#pragma unroll
 		for (int i = 0; i < 4; ++i) p[i] = x[idx(i)];
 
 		Scalar energy = 0;
-		Vec4x K = Ks[eid];
-#pragma unroll
-		for (int i = 0;i < 4;++i)
-#pragma unroll
-			for (int j = 0; j < 4; ++j)
-			{
-				energy += K(i) * K(j) * p[i].dot(p[j]);
-			}
 
-		energies[eid] = 0.5f * stiffness[eid] * energy;
+		// flat term
+		Vec4x K = Ks[eid];
+		for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j)
+		{
+			energy += K(i) * K(j) * p[i].dot(p[j]);
+		}
+
+		// nonflat term
+		Vec3x e0 = p[1] - p[0], e1 = p[2] - p[0], e2 = p[3] - p[0];
+
+		energies[eid] = 0.5f * flat_stiffness[eid] * energy + nonflat_stiffness[eid] * e0.cross(e1).dot(e2);
 	}
 
 	Scalar BendingConstraints::computeEnergy(const Vec3x* x)
 	{
 		Scalar total_energy;
 		computeBendingEnergyKernel <<< get_block_num(m_num_edges), g_block_dim >>> (
-			m_num_edges, m_stiffness, m_indices, m_K, x, m_energy);
+			m_num_edges, m_flat_stiffness, m_nonflat_stiffness, m_indices, m_K, x, m_energy);
 		CublasCaller<Scalar>::sum(m_handle, m_num_edges, m_energy, &total_energy);
 		return total_energy;
 	}
 
-	__global__ void computeBendingGradientKernel(int n_edges, const Scalar* stiffness, const EdgeIdx* indices, 
+	__global__ void computeBendingGradientKernel(int n_edges, const Scalar* flat_stiffness, const Scalar* nonflat_stiffness, const EdgeIdx* indices, 
 		const Vec4x* Ks, const Vec3x* x, Vec3x* gradient)
 	{
 		int eid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -335,27 +390,38 @@ namespace cloth
 
 		EdgeIdx idx = indices[eid];
 		Vec3x p[4];
-#pragma unroll
 		for (int i = 0; i < 4; ++i) p[i] = x[idx(i)];
 
+		// flat term
 		Vec4x K = Ks[eid];
 		Vec3x g;
-#pragma unroll
 		for (int i = 0; i < 4; ++i)
 		{
 			g.setZero();
-#pragma unroll
 			for (int j = 0; j < 4; ++j)
 			{
 				g += K(i) * K(j) * p[j];
 			}
-			atomicAddVec3x(&gradient[idx(i)], stiffness[eid] * g);
+			atomicAddVec3x(&gradient[idx(i)], flat_stiffness[eid] * g);
 		}
+
+		// nonflat term
+		Vec3x e0 = p[1] - p[0], e1 = p[2] - p[0], e2 = p[3] - p[0];
+		Scalar k_bar = nonflat_stiffness[eid];
+		Vec3x g1 = k_bar * e1.cross(e2),
+			  g2 = k_bar * e2.cross(e0),
+			  g3 = k_bar * e0.cross(e1);
+
+		atomicAddVec3x(&gradient[idx(0)], -(g1 + g2 + g3));
+		atomicAddVec3x(&gradient[idx(1)], g1);
+		atomicAddVec3x(&gradient[idx(2)], g2);
+		atomicAddVec3x(&gradient[idx(3)], g3);
 	}
 
 	void BendingConstraints::computeGradiant(const Vec3x* x, Vec3x* gradient)
 	{
-		computeBendingGradientKernel <<< get_block_num(m_num_edges), g_block_dim >>> (m_num_edges, m_stiffness, m_indices, m_K, x, gradient);
+		computeBendingGradientKernel <<< get_block_num(m_num_edges), g_block_dim >>> 
+			(m_num_edges, m_flat_stiffness, m_nonflat_stiffness, m_indices, m_K, x, gradient);
 	}
 
 	/**************************** ATTACHMENT CONSTRAINTS *************************/
@@ -389,6 +455,19 @@ namespace cloth
 			cudaMemcpy(m_indices, indices, n_fixed * sizeof(int), cudaMemcpyHostToDevice);
 			cudaMemcpy(m_targets, targets, n_fixed * sizeof(Vec3x), cudaMemcpyHostToDevice);
 		}
+	}
+
+	__global__ void computeAttachmentWeitedLaplacianKernel(int n_attach, Scalar stiffness, const int* indices, SparseMatrixWrapper L)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n_attach) return;
+
+		L.atomicAddIdentity(indices[i], stiffness);
+	}
+
+	void AttachmentConstraints::computeWeightedLaplacian(SparseMatrix& L)
+	{
+		computeAttachmentWeitedLaplacianKernel <<< get_block_num(m_num_fixed), g_block_dim >>> (m_num_fixed, m_stiffness, m_indices, L);
 	}
 
 	void AttachmentConstraints::update(int n_fixed, const int* indices, const Vec3x* targets)
@@ -429,7 +508,7 @@ namespace cloth
 		int idx = indices[i];
 		Vec3x g = stiffness * (x[idx] - targets[i]);
 		atomicAddVec3x(&grad[idx], g);
-		hess.atomicAddInIndentity(idx, stiffness);
+		hess.atomicAddIdentity(idx, stiffness);
 	}
 
 	void AttachmentConstraints::computeGradiantAndHessian(const Vec3x* x, Vec3x* gradient, SparseMatrix& hessian)

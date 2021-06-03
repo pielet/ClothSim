@@ -1,5 +1,5 @@
 // Author: Shiyang Jia (jsy0325@foxmail.com)
-// Data: 12/23/2020
+// Date: 12/23/2020
 
 #ifndef CONSTRAINTS_H
 #define CONSTRAINTS_H
@@ -19,7 +19,8 @@ namespace cloth
 		StretchingConstraints();
 		~StretchingConstraints();
 
-		void initialize(int n_faces, const MaterialParameters* material, const FaceIdx* indices, const Vec3x* x, const Vec2x* uv, Scalar* mass);
+		void initialize(int n_faces, const MaterialParameters* material, const FaceIdx* indices, const FaceIdx* uv_indices, const Vec2x* uv, Scalar* mass);
+		void computeWeightedLaplacian(SparseMatrix& Laplacian);
 		
 		Scalar computeEnergy(const Vec3x* x);
 		void computeGradiantAndHessian(const Vec3x* x, Vec3x* gradient, SparseMatrix& hessian, bool definiteness_fix = true);
@@ -34,9 +35,10 @@ namespace cloth
 
 		cublasHandle_t m_handle;
 
+		MeshType m_type;
 		Scalar m_mu;
 		Scalar m_lambda;
-		MeshType m_type;
+		Scalar m_laplacian_coeff;
 
 		int m_num_faces;
 	};
@@ -57,7 +59,8 @@ namespace cloth
 
 	private:
 		EdgeIdx* m_indices;	// 4 * m_num_edges
-		Scalar* m_stiffness;
+		Scalar* m_flat_stiffness;
+		Scalar* m_nonflat_stiffness; // for non-plane gradient
 		Vec4x* m_K;
 		Scalar* m_energy;
 
@@ -73,7 +76,9 @@ namespace cloth
 		~AttachmentConstraints();
 
 		void initialize(int n_fixed, Scalar stiffness, const int* indices, const Vec3x* targets);
+		void computeWeightedLaplacian(SparseMatrix& Laplacian);
 		
+		// TODO: only the target positions can be change (considering PD)
 		void update(int n_fixed, const int* indices, const Vec3x* targets);
 		
 		Scalar computeEnergy(const Vec3x* x);
