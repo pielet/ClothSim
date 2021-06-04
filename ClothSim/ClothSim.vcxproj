@@ -11,19 +11,19 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{EB22B432-41FE-4386-B727-F3897A235C45}</ProjectGuid>
-    <RootNamespace>ClothSimulatorApp</RootNamespace>
+    <ProjectGuid>{E23E08C9-3963-40B1-A6DB-C0CA82A331C8}</ProjectGuid>
+    <RootNamespace>ClothSim</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>MultiByte</CharacterSet>
     <PlatformToolset>v142</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
@@ -42,29 +42,31 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>..\Libs\glm-0.9.9.8;..\Libs\glew-2.1.0\include;..\Libs\freeglut\include;..\Libs\eigen-3.3.7;$(IncludePath)</IncludePath>
-    <LibraryPath>..\Libs\glew-2.1.0\x64;..\$(Platform)\$(Configuration);..\Libs\freeglut\x64;$(LibraryPath)</LibraryPath>
+    <IncludePath>..\Libs\eigen-3.3.7;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>..\Libs\glm-0.9.9.8;..\Libs\glew-2.1.0\include;..\Libs\freeglut\include;..\Libs\eigen-3.3.7;$(IncludePath)</IncludePath>
-    <LibraryPath>..\Libs\glew-2.1.0\x64;..\$(Platform)\$(Configuration);..\Libs\freeglut\x64;$(LibraryPath)</LibraryPath>
+    <IncludePath>..\Libs\eigen-3.3.7;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;WIN64;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\ClothSim;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;freeglut.lib;glew32.lib;ClothSim.lib;cublas.lib;cusparse.lib;cusolver.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;cudadevrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
     </CudaCompile>
+    <CustomBuildStep>
+      <Command>
+      </Command>
+    </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -73,33 +75,46 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;WIN64;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\ClothSim;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;freeglut.lib;glew32.lib;ClothSim.lib;cublas.lib;cusparse.lib;cusolver.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;cudadevrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <GenerateRelocatableDeviceCode>true</GenerateRelocatableDeviceCode>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
     </CudaCompile>
+    <CustomBuildStep>
+      <Command>
+      </Command>
+    </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="Render\Camera.cpp" />
-    <ClCompile Include="Render\Shader.cpp" />
+    <CudaCompile Include="ClothSim.cu" />
+    <CudaCompile Include="Constraints.cu" />
+    <CudaCompile Include="LinearSolver.cu" />
+    <CudaCompile Include="SparseMatrix.cu" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utility.h" />
-    <ClInclude Include="Render\Camera.h" />
-    <ClInclude Include="Render\Shader.h" />
-    <ClInclude Include="Render\ClothRenderer.h" />
+    <ClInclude Include="ClothSim.h" />
+    <ClInclude Include="Constraints.h" />
+    <ClInclude Include="json\json-forwards.h" />
+    <ClInclude Include="json\json.h" />
+    <ClInclude Include="LinearSolver.h" />
+    <ClInclude Include="SparseMatrix.h" />
+    <ClInclude Include="Utils\Cublas.h" />
+    <ClInclude Include="Utils\helper_cuda.h" />
+    <ClInclude Include="Utils\json_loader.h" />
+    <ClInclude Include="Utils\MathDef.h" />
+    <ClInclude Include="Utils\Timer.h" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="Render\ClothRenderer.cu" />
+    <ClCompile Include="json\jsoncpp.cpp" />
+    <ClCompile Include="Utils\json_loader.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
