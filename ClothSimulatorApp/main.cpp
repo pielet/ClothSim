@@ -9,6 +9,8 @@
 #include "Render/Shader.h"
 #include "Render/ClothRenderer.h"
 #include "../ClothSim/ClothSim.h"
+#include "../ClothSim/Utils/MathDef.h"
+#include "../ClothSim/Utils/MathUtility.h"
 
 // parameters
 int g_window_width = 800;
@@ -107,15 +109,24 @@ void display()
 
 	bool update = false;
 
-	if (g_stop)
+	try
 	{
-		if (g_step)
+		if (g_stop)
 		{
-			update = g_cloth->step();
-			g_step = false;
+			if (g_step)
+			{
+				update = g_cloth->step();
+				g_step = false;
+			}
 		}
+		else update = g_cloth->step();
 	}
-	else update = g_cloth->step();
+	catch (const std::exception& e)
+	{
+		std::cerr << e.what() << std::endl;
+		glutSetOption(GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_ACTION_CONTINUE_EXECUTION);
+		glutLeaveMainLoop();
+	}
 
 	if (update) g_renderer->ackGeometryChange();
 	g_renderer->draw(g_shader);
@@ -129,6 +140,24 @@ void display()
 
 int main(int argc, char** argv)
 {
+	// svd test
+	//cloth::Mat3x U, V;
+	//cloth::Vec3x S;
+	//U.setRow(0, cloth::Vec3x(-0.7922, -0.0357, -0.6787));
+	//U.setRow(1, cloth::Vec3x(-0.9595, -0.8491, -0.7577));
+	//U.setRow(2, cloth::Vec3x(-0.6557, -0.9340, -0.7431));
+
+	//U.print();
+	//V.print();
+	//S.print();
+	//std::cout << "\n\n";
+
+	//cloth::SVDdecomp(U, V, S);
+
+	//U.print();
+	//V.print();
+	//S.print();
+
 	// glut
 	glutInit(&argc, argv);
 	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);

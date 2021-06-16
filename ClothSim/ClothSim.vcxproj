@@ -98,6 +98,7 @@
     <CudaCompile Include="Constraints.cu" />
     <CudaCompile Include="LinearSolver.cu" />
     <CudaCompile Include="SparseMatrix.cu" />
+    <CudaCompile Include="Utils\MathUtility.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ClothSim.h" />
@@ -110,6 +111,7 @@
     <ClInclude Include="Utils\helper_cuda.h" />
     <ClInclude Include="Utils\json_loader.h" />
     <ClInclude Include="Utils\MathDef.h" />
+    <ClInclude Include="Utils\MathUtility.h" />
     <ClInclude Include="Utils\Timer.h" />
   </ItemGroup>
   <ItemGroup>

@@ -1,6 +1,7 @@
 #include "Constraints.h"
 #include <cuda_runtime.h>
 #include "ClothSim.h"
+#include "Utils/MathUtility.h"
 
 #include <vector>
 #include <iostream>
@@ -144,12 +145,11 @@ namespace cloth
 		int fid = blockIdx.x * blockDim.x + threadIdx.x;
 		if (fid >= n_faces) return;
 
-		Vec3x p[3];
-#pragma unroll
-		for (int i = 0; i < 3; ++i) p[i] = x[indices[fid](i)];
+		FaceIdx idx = indices[fid];
+		Vec3x p0 = x[idx(0)], p1 = x[idx(1)], p2 = x[idx(2)];
 
 		Mat3x2x F;
-		F.setCol(0, p[0] - p[2]); F.setCol(1, p[1] - p[2]);
+		F.setCol(0, p0 - p2); F.setCol(1, p1 - p2);
 		F *= Dm_inv[fid];
 
 		Mat2x E = 0.5f * (F.transpose() * F - Mat2x::Identity());
@@ -182,20 +182,69 @@ namespace cloth
 		return total_energy;
 	}
 
-	__global__ void computeStretchingGradientAndHessianStVKKernel(int n_faces, Scalar mu, Scalar lambda, const FaceIdx* indices,
-		const Scalar* areas, const Mat2x* Dm_invs, const Vec3x* x, Vec3x* grad, SparseMatrixWrapper hess)
+	__global__ void computeStretchingGradientStVKKernel(int n_faces, Scalar mu, Scalar lambda, const FaceIdx* indices,
+		const Scalar* areas, const Mat2x* Dm_invs, const Vec3x* x, Vec3x* grad)
 	{
 		int fid = blockIdx.x * blockDim.x + threadIdx.x;
 		if (fid >= n_faces) return;
 
 		FaceIdx idx = indices[fid];
-		Vec3x p[3];
-#pragma unroll
-		for (int i = 0; i < 3; ++i) p[i] = x[idx(i)];
+		Vec3x p0 = x[idx(0)], p1 = x[idx(1)], p2 = x[idx(2)];
 
-		Mat2x Dm_inv = Dm_invs[fid];
 		Mat3x2x F;
-		F.setCol(0, p[0] - p[2]); F.setCol(1, p[1] - p[2]);
+		Mat2x Dm_inv = Dm_invs[fid];
+		F.setCol(0, p0 - p2); F.setCol(1, p1 - p2);
+		F *= Dm_inv;
+
+		Mat2x E = 0.5f * (F.transpose() * F - Mat2x::Identity());
+
+		// stress tensor P
+		Mat3x2x P = F * (2 * mu * E + lambda * E.trace() * Mat2x::Identity());
+		Mat2x Dm_invT = Dm_inv.transpose();
+		P *= areas[fid] * Dm_invT;
+
+		atomicAddVec3x(&grad[idx(0)], P.col(0));
+		atomicAddVec3x(&grad[idx(1)], P.col(1));
+		atomicAddVec3x(&grad[idx(2)], -(P.col(0) + P.col(1)));
+	}
+
+	void StretchingConstraints::computeGradient(const Vec3x* x, Vec3x* grad)
+	{
+		switch (m_type)
+		{
+		case MESH_TYPE_StVK:
+			computeStretchingGradientStVKKernel << < get_block_num(m_num_faces), g_block_dim >> > (
+				m_num_faces, m_mu, m_lambda, m_indices, m_areas, m_Dm_inv, x, grad);
+			break;
+		case MESH_TYPE_NEO_HOOKEAN:
+			break;
+		case MESH_TYPE_DATA_DRIVEN:
+			break;
+		case MESH_TYPE_COUNT:
+			break;
+		default:
+			break;
+		}
+	}
+
+	__global__ void computeStretchingGradientAndHessianStVKKernel(int n_faces, Scalar mu, Scalar lambda, const FaceIdx* indices,
+		const Scalar* areas, const Mat2x* Dm_invs, const Vec3x* x, Vec3x* grad, SparseMatrixWrapper hess, Vec9x* sigma_out)
+	{
+		int fid = blockIdx.x * blockDim.x + threadIdx.x;
+		if (fid >= n_faces) return;
+
+		extern __shared__ Mat9x shared_mem[];
+		Mat9x& U = shared_mem[2 * threadIdx.x];
+		Mat9x& V = shared_mem[2 * threadIdx.x + 1];
+
+		int i, j, k, l;
+
+		FaceIdx idx = indices[fid];
+		Vec3x p0 = x[idx(0)], p1 = x[idx(1)], p2 = x[idx(2)];
+
+		Mat3x2x F;
+		Mat2x Dm_inv = Dm_invs[fid];
+		F.setCol(0, p0 - p2); F.setCol(1, p1 - p2);
 		F *= Dm_inv;
 
 		Mat2x E = 0.5f * (F.transpose() * F - Mat2x::Identity());
@@ -214,7 +263,7 @@ namespace cloth
 		// DPDF
 		Tensor3232x DPDF;
 		Mat3x2x deltaF; Mat2x deltaE;
-		for (int i = 0; i < 3; ++i) for (int j = 0; j < 2; ++j)
+		for (i = 0; i < 3; ++i) for (j = 0; j < 2; ++j)
 		{
 			deltaF.setZero();
 			deltaF(i, j) = 1.f;
@@ -228,26 +277,61 @@ namespace cloth
 		//!  10       11       -(10+11)
 		//!  -(00+10) -(01+11) 00+01+10+11
 		Mat3x H_block[2][2];
-		for (int k = 0; k < 2; ++k) for (int i = 0; i < 2; ++i)	// write top-left 2x2 block
+		for (k = 0; k < 2; ++k) for (i = 0; i < 2; ++i)	// write top-left 2x2 block
 		{
-			for (int l = 0; l < 3; ++l) H_block[k][i].setRow(l, DPDF(l, k).col(i));
-			hess.atomicAddBlock(idx(k), idx(i), H_block[k][i]);
+			for (l = 0; l < 3; ++l) H_block[k][i].setRow(l, DPDF(l, k).col(i));
+			U.setBlock(k, i, H_block[k][i]);
 		}
-		hess.atomicAddBlock(idx(2), idx(0), -(H_block[0][0] + H_block[1][0]));
-		hess.atomicAddBlock(idx(2), idx(1), -(H_block[0][1] + H_block[1][1]));
-		hess.atomicAddBlock(idx(0), idx(2), -(H_block[0][0] + H_block[0][1]));
-		hess.atomicAddBlock(idx(1), idx(2), -(H_block[1][0] + H_block[1][1]));
-		hess.atomicAddBlock(idx(2), idx(2), H_block[0][0] + H_block[1][0] + H_block[0][1] + H_block[1][1]);
+
+		U.setBlock(2, 0, -(H_block[0][0] + H_block[1][0]));
+		U.setBlock(2, 1, -(H_block[0][1] + H_block[1][1]));
+		U.setBlock(0, 2, -(H_block[0][0] + H_block[0][1]));
+		U.setBlock(1, 2, -(H_block[1][0] + H_block[1][1]));
+		U.setBlock(2, 2, H_block[0][0] + H_block[1][0] + H_block[0][1] + H_block[1][1]);
+
+		// definiteness fix
+		Vec9x sigma;
+		bool succ = SVDdecomp(U, V, sigma);
+		sigma_out[fid] = sigma;
+		if (succ)
+		{
+			//SVDreorder(*U, *V, sigma);
+
+			Scalar smallest_sigma = 1e-6f;
+			for (i = 0; i < 9; ++i) sigma(i) = fmax(sigma(i), smallest_sigma);
+
+			Vec9x U_row;
+			Scalar sum;
+			for (i = 0; i < 9; ++i)
+			{
+				for (j = 0; j < 9; ++j)
+					U_row(j) = U(i, j) * sigma(j);
+				for (j = 0; j < 9; ++j)
+				{
+					sum = 0.0f;
+					for (k = 0; k < 9; ++k)
+						sum += U_row(k) * V(j, k);
+					U(i, j) = sum;
+				}
+			}
+		}
+
+		for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+		{
+			hess.atomicAddBlock(idx(i), idx(j), U.block<3, 3>(i, j));
+		}
 	}
 
 	void StretchingConstraints::computeGradiantAndHessian(const Vec3x* x, Vec3x* grad, SparseMatrix& hess, bool definiteness_fix)
 	{
-		// FIXME: No definiteness fix yet !!!!!!!!!!!!!!!
+		Vec9x* sigma;
+		cudaMalloc((void**)&sigma, m_num_faces * sizeof(Vec9x));
+
 		switch (m_type)
 		{
 		case MESH_TYPE_StVK:
-			computeStretchingGradientAndHessianStVKKernel <<< get_block_num(m_num_faces), g_block_dim >>> (
-				m_num_faces, m_mu, m_lambda, m_indices, m_areas, m_Dm_inv, x, grad, hess);
+			computeStretchingGradientAndHessianStVKKernel <<< get_block_num(m_num_faces), g_block_dim, g_block_dim * 2 * sizeof(Mat9x) >>> (
+				m_num_faces, m_mu, m_lambda, m_indices, m_areas, m_Dm_inv, x, grad, hess, sigma);
 			break;
 		case MESH_TYPE_NEO_HOOKEAN:
 			break;
@@ -257,6 +341,20 @@ namespace cloth
 			break;
 		default:
 			break;
+		}
+
+		std::vector<Vec9x> test_S(m_num_faces);
+		cudaMemcpy(test_S.data(), sigma, test_S.size() * sizeof(Vec9x), cudaMemcpyDeviceToHost);
+		for (int i = 0; i < m_num_faces; ++i) {
+			bool minus = false;
+			for (int j = 0; j < 9; ++j)
+				if (test_S[i](j) < 1e-6) minus = true;
+			if (minus)
+			{
+				std::cout << "face " << i << ": "; 
+				test_S[i].print();
+				std::cout << '\n';
+			}
 		}
 	}
 
@@ -497,6 +595,25 @@ namespace cloth
 			CublasCaller<Scalar>::sum(m_handle, m_num_fixed, m_energy, &total_energy);
 		}
 		return total_energy;
+	}
+
+	__global__ void computeAttachmentGradientKernel(int n_attach, Scalar stiffness, const int* indices, const Vec3x* targets, const Vec3x* x, Vec3x* grad)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n_attach) return;
+
+		int idx = indices[i];
+		Vec3x g = stiffness * (x[idx] - targets[i]);
+		atomicAddVec3x(&grad[idx], g);
+	}
+
+	void AttachmentConstraints::computeGradient(const Vec3x* x, Vec3x* gradient)
+	{
+		if (m_num_fixed)
+		{
+			computeAttachmentGradientKernel <<< get_block_num(m_num_fixed), g_block_dim >>> (
+				m_num_fixed, m_stiffness, m_indices, m_targets, x, gradient);
+		}
 	}
 
 	__global__ void computeAttachmentGradientAndHessianKernel(int n_attach, Scalar stiffness, const int* indices, const Vec3x* targets, const Vec3x* x, 

@@ -46,9 +46,9 @@ namespace Eigen
 
 namespace cloth
 {
-	const Scalar EPS = 1e-6f;
+	CUDA_MEMBER const Scalar EPS = 1e-12f;
 
-	const int g_block_dim = 128;
+	const int g_block_dim = 32;
 	inline int get_block_num(int n) { return (n + g_block_dim - 1) / g_block_dim; }
 
 	const Scalar M_PI = 3.141592653589793238462643383279f;
@@ -63,8 +63,10 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER ~Vec() {}
 		CUDA_CALLABLE_MEMBER Vec(const Vec<T, n>& other);
 		CUDA_CALLABLE_MEMBER Vec(Eigen::Matrix<T, n, 1>& eigen_vec);
-		CUDA_CALLABLE_MEMBER Vec(int x, int y, int z);	// assert n == 3
-		CUDA_CALLABLE_MEMBER Vec(int x, int y, int z, int w);	// assert n == 4
+		CUDA_CALLABLE_MEMBER Vec(T x, T y, T z);	// assert n == 3
+		CUDA_CALLABLE_MEMBER Vec(T x, T y, T z, T w);	// assert n == 4
+
+		CUDA_CALLABLE_MEMBER void print() const;
 
 		CUDA_CALLABLE_MEMBER T& operator()(int i) { return value[i]; }
 		CUDA_CALLABLE_MEMBER const T& operator()(int i) const { return value[i]; }
@@ -100,6 +102,8 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER Mat(const Mat<T, m, n>& other);
 		CUDA_CALLABLE_MEMBER ~Mat() {}
 
+		CUDA_CALLABLE_MEMBER void print() const;
+
 		CUDA_CALLABLE_MEMBER T& operator()(int i, int j) { return value[i][j]; }
 		CUDA_CALLABLE_MEMBER const T& operator()(int i, int j) const { return value[i][j]; }
 
@@ -107,6 +111,11 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER Vec<T, m> row(int i) const;
 		CUDA_CALLABLE_MEMBER void setCol(int i, const Vec<T, m>& vec);
 		CUDA_CALLABLE_MEMBER void setRow(int i, const Vec<T, n>& vec);
+		template <int mm, int nn> 
+		CUDA_CALLABLE_MEMBER Mat<T, mm, nn> block(int i, int j) const; // get the (i, j)-th <mm, nn> block
+		template <int mm, int nn>
+		CUDA_CALLABLE_MEMBER void setBlock(int i, int j, const Mat<T, mm, nn>& mat); // get the (i, j)-th <mm, nn> block
+
 		CUDA_CALLABLE_MEMBER void setZero();
 
 		CUDA_CALLABLE_MEMBER Mat<T, m, n> inverse() const;	// only used in Mat<Scalar, 2, 2>
@@ -156,17 +165,23 @@ namespace cloth
 	}
 
 	template <typename T, int n>
-	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(int x, int y, int z)
+	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(T x, T y, T z)
 	{
 		assert(n == 3);
 		value[0] = x; value[1] = y; value[2] = z;
 	}
 
 	template <typename T, int n>
-	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(int x, int y, int z, int w)
+	CUDA_CALLABLE_MEMBER Vec<T, n>::Vec(T x, T y, T z, T w)
 	{
 		assert(n == 4);
 		value[0] = x; value[1] = y; value[2] = z; value[3] = w;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER void Vec<T, n>::print() const
+	{
+		for (int i = 0; i < n; ++i) printf("%.6f ", value[i]);
 	}
 
 	template <typename T, int n>
@@ -343,6 +358,16 @@ namespace cloth
 	}
 
 	template <typename T, int m, int n>
+	CUDA_CALLABLE_MEMBER void Mat<T, m, n>::print() const
+	{
+		for (int i = 0; i < m; ++i)
+		{
+			for (int j = 0; j < n; ++j) printf("%.6f ", value[i][j]);
+			printf("\n");
+		}
+	}
+
+	template <typename T, int m, int n>
 	CUDA_CALLABLE_MEMBER Vec<T, m> Mat<T, m, n>::col(int ci) const
 	{
 		Vec<T, m> vec;
@@ -372,6 +397,35 @@ namespace cloth
 	{
 #pragma unroll
 		for (int i = 0; i < n; ++i) value[ri][i] = vec.value[i];
+	}
+
+	template <typename T, int m, int n>
+	template <int mm, int nn> 
+	CUDA_CALLABLE_MEMBER Mat<T, mm, nn> Mat<T, m, n>::block(int bi, int bj) const
+	{
+		assert((bi + 1) * mm <= m && (bj + 1) * nn <= n);
+
+		Mat<T, mm, nn> mat;
+		int start_i = bi * mm, start_j = bj * nn;
+		for (int i = 0; i < mm; ++i) for (int j = 0; j < nn; ++j)
+		{
+			mat.value[i][j] = value[start_i + i][start_j + j];
+		}
+
+		return mat;
+	}
+
+	template <typename T, int m, int n>
+	template <int mm, int nn>
+	CUDA_CALLABLE_MEMBER void Mat<T, m, n>::setBlock(int bi, int bj, const Mat<T, mm, nn>& mat)
+	{
+		assert((bi + 1) * mm <= m && (bj + 1) * nn <= n);
+
+		int start_i = bi * mm, start_j = bj * nn;
+		for (int i = 0; i < mm; ++i) for (int j = 0; j < nn; ++j)
+		{
+			value[start_i + i][start_j + j] = mat.value[i][j];
+		}
 	}
 
 	template <typename T, int m, int n>
@@ -628,9 +682,11 @@ namespace cloth
 	typedef Vec<Scalar, 2> Vec2x;
 	typedef Vec<Scalar, 3> Vec3x;
 	typedef Vec<Scalar, 4> Vec4x;
+	typedef Vec<Scalar, 9> Vec9x;
 
 	typedef Mat<Scalar, 2, 2> Mat2x;
 	typedef Mat<Scalar, 3, 3> Mat3x;
+	typedef Mat<Scalar, 9, 9> Mat9x;
 	typedef Mat<Scalar, 3, 2> Mat3x2x;
 
 	typedef Mat<Mat<Scalar, 3, 2>, 3, 2> Tensor3232x;

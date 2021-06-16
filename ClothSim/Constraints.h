@@ -23,6 +23,7 @@ namespace cloth
 		void computeWeightedLaplacian(SparseMatrix& Laplacian);
 		
 		Scalar computeEnergy(const Vec3x* x);
+		void computeGradient(const Vec3x* x, Vec3x* gradient);
 		void computeGradiantAndHessian(const Vec3x* x, Vec3x* gradient, SparseMatrix& hessian, bool definiteness_fix = true);
 
 		const FaceIdx* getIndices() const;
@@ -82,6 +83,7 @@ namespace cloth
 		void update(int n_fixed, const int* indices, const Vec3x* targets);
 		
 		Scalar computeEnergy(const Vec3x* x);
+		void computeGradient(const Vec3x* x, Vec3x* gradient);
 		void computeGradiantAndHessian(const Vec3x* x, Vec3x* gradient, SparseMatrix& hessian);
 	private:
 		int* m_indices;

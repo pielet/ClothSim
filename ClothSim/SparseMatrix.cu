@@ -218,8 +218,7 @@ namespace cloth
 	{
 		int i = blockDim.x * blockIdx.x + threadIdx.x;
 		if (i >= n_face) return;
-
-#pragma unroll
+		
 		for (int j = 0; j < 3; ++j)
 		{
 			start_idx[i](j) = atomicAdd(&row_ptr[face_idx[i](j)], 3);
@@ -231,7 +230,6 @@ namespace cloth
 		int i = blockDim.x * blockIdx.x + threadIdx.x;
 		if (i >= n_edge) return;
 
-#pragma unroll
 		for (int j = 0; j < 4; ++j)
 		{
 			start_idx[i](j) = atomicAdd(&row_ptr[edge_idx[i](j)], 4);
@@ -391,6 +389,19 @@ namespace cloth
 	void SparseMatrix::assign(SparseMatrix& other)
 	{
 		cudaMemcpy(m_value, other.m_value, m_nnz * sizeof(Scalar), cudaMemcpyDeviceToDevice);
+	}
+
+	__global__ void addInDiagonalKernel(int n, const int* diag_idx, Scalar* value, Scalar a)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n) return;
+
+		value[diag_idx[i]] += a;
+	}
+
+	void SparseMatrix::addInDiagonal(Scalar a)
+	{
+		addInDiagonalKernel <<< get_block_num(m_n), g_block_dim >>> (m_n, m_diagonal_idx, m_value, a);
 	}
 
 	__global__ void addInDiagonalKernel(int n, Scalar a, const int* diag_idx, const Scalar* M, Scalar* value)

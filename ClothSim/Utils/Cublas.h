@@ -58,6 +58,11 @@ struct CublasCaller<float>
 		checkCudaErrors(cublasSdot(handle, n, x, 1, y, 1, res));
 	}
 
+	static void nrm2(cublasHandle_t handle, int n, const float* x, float* res)
+	{
+		checkCudaErrors(cublasSnrm2(handle, n, x, 1, res));
+	}
+
 	static void scal(cublasHandle_t handle, int n, const float* alpha, float* x, int strip = 1)
 	{
 		checkCudaErrors(cublasSscal(handle, n, alpha, x, strip));

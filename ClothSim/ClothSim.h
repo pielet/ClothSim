@@ -159,14 +159,14 @@ namespace cloth
 	private:
 		void loadScene(const std::string& fname);
 
-		bool NewtonStep(const Vec3x* v_next, Vec3x* delta_v, std::vector<Scalar>& step_size);
+		void NewtonStep(Vec3x* v_next);
 		
-		void evaluateGradientAndHessian(const Vec3x* x);
+		void evaluateGradientAndHessian(const Vec3x* x, const Vec3x* v);
 		Scalar evaluateObjectiveValue(int i, const Vec3x* v_next);
-		Scalar lineSearch(int i, const Vec3x* gradient_dir, const Vec3x* descent_dir, std::vector<Scalar>& step_size);
+		Scalar lineSearch(int i, const Scalar* gradient_dir, const Scalar* descent_dir, Scalar& step_size);
 
-		bool ProjectiveDynamics(const Vec3x* v_next, Vec3x* delta_v, std::vector<Scalar>& step_size);
-
+		void ProjectiveDynamicsStep(Vec3x* v_next);
+		void evaluateGradient(const Vec3x* x, const Vec3x* v);
 
 		//! Simulation parameters
 		Scalar m_time;

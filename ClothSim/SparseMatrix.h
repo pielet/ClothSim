@@ -23,6 +23,9 @@ namespace cloth
 		//! Copies value vector from [other] to [*this]
 		void assign(SparseMatrix& other);
 
+		//! Adds a scalar to diagonal elements
+		void addInDiagonal(Scalar a);
+
 		//! Adds diagonal matrix to block of *this with scaling a
 		void addInDiagonal(const Scalar* M, Scalar a = 1.f);
 

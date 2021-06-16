@@ -19,7 +19,7 @@ Cloth model:
 
 - Membrane energy: StVK model
 
-- Bending energy: [discrete quadratic bending model](http://www.cs.columbia.edu/cg/quadratic/)
+- Bending energy: ~~[discrete quadratic bending model](http://www.cs.columbia.edu/cg/quadratic/)~~ [Cubic Shells](http://www.cs.columbia.edu/cg/pdfs/140-cubicShells-a4.pdf)
 
 Sparse matrix construction method is adapted from [CAMA](http://gamma.cs.unc.edu/CAMA/).
 
@@ -27,10 +27,11 @@ Implicit Euler integration -> nonlinear equation -> solved with Newton's method 
 
 ## TODO
 
-* [ ] **definiteness fix for stretching energy hessian**
+* [x] **definiteness fix for stretching energy hessian**
+* [x] regularization for near singular hessian matrix
 * [ ] replace `chol` with `cusolverRf` in Newton's method
 * [ ] **handle update and motion scripts**
 * [ ] output and checkpoint
 * [ ] **Neo-Hookean model**
-* [ ] Projective Dynamics
+* [x] **Projective Dynamics**
 * [ ] collision detection

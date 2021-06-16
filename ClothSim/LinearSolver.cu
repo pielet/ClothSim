@@ -162,6 +162,27 @@ namespace cloth
 			//cudaMemcpy(test.data(), b, n * sizeof(double), cudaMemcpyDeviceToHost);
 			//std::cout << test;
 		}
+
+		static void cholAnalysis(cusolverSpHandle_t handle, int n, int nnz, cusparseMatDescr_t descrA, const double* values, const int* rowPtr, const int* colIdx, csrcholInfo_t info, size_t* buffer_size)
+		{
+			size_t internal_size;
+			cusolverSpDcsrcholBufferInfo(handle, n, nnz, descrA, values, rowPtr, colIdx, info, &internal_size, buffer_size);
+		}
+
+		static void cholFactor(cusolverSpHandle_t handle, int n, int nnz, cusparseMatDescr_t descrA, const double* values, const int* rowPtr, const int* colIdx, csrcholInfo_t info, void* buffer)
+		{
+			cusolverSpDcsrcholFactor(handle, n, nnz, descrA, values, rowPtr, colIdx, info, buffer);
+		}
+
+		static void cholSolve(cusolverSpHandle_t handle, int n, const double* b, double* x, csrcholInfo_t info, void* buffer)
+		{
+			cusolverSpDcsrcholSolve(handle, n, b, x, info, buffer);
+		}
+
+		static void zeroPivot(cusolverSpHandle_t handle, csrcholInfo_t info, double tol, int* position)
+		{
+			cusolverSpDcsrcholZeroPivot(handle, info, tol, position);
+		}
 	};
 
 	template <>
@@ -170,6 +191,27 @@ namespace cloth
 		static void cholesky(cusolverSpHandle_t handle, int n, int nnz, cusparseMatDescr_t descrA, const float* values, const int* rowPtr, const int* colIdx, const float* b, float* x, int* singularity)
 		{
 			cusolverSpScsrlsvchol(handle, n, nnz, descrA, values, rowPtr, colIdx, b, EPS, 2, x, singularity);  // symamd
+		}
+
+		static void cholAnalysis(cusolverSpHandle_t handle, int n, int nnz, cusparseMatDescr_t descrA, const float* values, const int* rowPtr, const int* colIdx, csrcholInfo_t info, size_t* buffer_size)
+		{
+			size_t internal_size;
+			cusolverSpScsrcholBufferInfo(handle, n, nnz, descrA, values, rowPtr, colIdx, info, &internal_size, buffer_size);
+		}
+
+		static void cholFactor(cusolverSpHandle_t handle, int n, int nnz, cusparseMatDescr_t descrA, const float* values, const int* rowPtr, const int* colIdx, csrcholInfo_t info, void* buffer)
+		{
+			cusolverSpScsrcholFactor(handle, n, nnz, descrA, values, rowPtr, colIdx, info, buffer);
+		}
+
+		static void cholSolve(cusolverSpHandle_t handle, int n, const float* b, float* x, csrcholInfo_t info, void* buffer)
+		{
+			cusolverSpScsrcholSolve(handle, n, b, x, info, buffer);
+		}
+
+		static void zeroPivot(cusolverSpHandle_t handle, csrcholInfo_t info, float tol, int* position)
+		{
+			cusolverSpScsrcholZeroPivot(handle, info, tol, position);
 		}
 	};
 
@@ -210,7 +252,8 @@ namespace cloth
 	}
 
 	LinearSolver::LinearSolver():
-		d_r(NULL), d_p(NULL), d_z(NULL), d_Ap(NULL), m_precond(NULL)
+		m_cublasHandle(NULL), m_cusolverSpHandle(NULL), m_descrA(NULL), d_info(NULL),
+		d_r(NULL), d_p(NULL), d_z(NULL), d_Ap(NULL), d_buffer(NULL), m_precond(NULL)
 	{}
 
 	LinearSolver::~LinearSolver()
@@ -219,10 +262,12 @@ namespace cloth
 		if (d_p) cudaFree(d_p);
 		if (d_z) cudaFree(d_z);
 		if (d_Ap) cudaFree(d_Ap);
+		if (d_buffer) cudaFree(d_buffer);
 
 		if (m_cublasHandle) cublasDestroy(m_cublasHandle);
 		if (m_cusolverSpHandle) cusolverSpDestroy(m_cusolverSpHandle);
 		if (m_descrA) cusparseDestroyMatDescr(m_descrA);
+		if (d_info) cusolverSpDestroyCsrcholInfo(d_info);
 
 		if (m_precond) delete m_precond;
 	}
@@ -258,6 +303,48 @@ namespace cloth
 		cudaMalloc((void**)&d_Ap, m_n * sizeof(Scalar));
 
 		m_mv_caller.initialize(mat, d_p, d_Ap);
+	}
+
+	void LinearSolver::cholFactor(SparseMatrix* A)
+	{
+		m_matrix = A;
+		m_n = A->getn();
+
+		cusolverSpCreate(&m_cusolverSpHandle);
+
+		cusparseCreateMatDescr(&m_descrA);
+		cusparseSetMatType(m_descrA, CUSPARSE_MATRIX_TYPE_GENERAL);
+		cusparseSetMatIndexBase(m_descrA, CUSPARSE_INDEX_BASE_ZERO);
+
+		cusolverSpCreateCsrcholInfo(&d_info); // create opaque info structure
+		cusolverSpXcsrcholAnalysis(m_cusolverSpHandle, m_n, A->getnnz(), m_descrA, A->getRowPtr(), A->getColIdx(), d_info); // analyze chol(A) to know structure of L
+
+		// workspace for chol(A)
+		size_t buffer_size;
+		CusolverCaller<Scalar>::cholAnalysis(
+			m_cusolverSpHandle, m_n, A->getnnz(), 
+			m_descrA, A->getValue(), A->getRowPtr(), A->getColIdx(), 
+			d_info, &buffer_size);
+		cudaMalloc(&d_buffer, sizeof(char) * buffer_size);
+
+		// compute A = L*L^T
+		CusolverCaller<Scalar>::cholFactor(
+			m_cusolverSpHandle, m_n, A->getnnz(), 
+			m_descrA, A->getValue(), A->getRowPtr(), A->getColIdx(), 
+			d_info, d_buffer);
+
+		// check if the matrix is singular
+		int singularity;
+		CusolverCaller<Scalar>::zeroPivot(m_cusolverSpHandle, d_info, EPS, &singularity);
+		if (singularity >= 0)
+		{
+			throw std::runtime_error("[LinearSolver::cholFactor] A is not invertible, singularity = " + singularity);
+		}
+	}
+
+	void LinearSolver::cholSolve(const Scalar* b, Scalar* x)
+	{
+		CusolverCaller<Scalar>::cholSolve(m_cusolverSpHandle, m_n, b, x, d_info, d_buffer);
 	}
 
 	bool LinearSolver::cholesky(const Scalar* b, Scalar* x)

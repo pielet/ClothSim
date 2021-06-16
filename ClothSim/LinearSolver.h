@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cusolverSp.h>
+#include "cusolverSp_LOWLEVEL_PREVIEW.h"
 #include "Utils/Cublas.h"
 #include "SparseMatrix.h"
 
@@ -35,7 +36,14 @@ namespace cloth
 		LinearSolver();
 		~LinearSolver();
 
+		//! Initialize matrix descriptor and preconditioner (for CG)
 		void initialize(SparseMatrix* matrix, PrecondT pt = NoPreconditionner);
+
+		//! Perform LLT pre-factorization
+		void cholFactor(SparseMatrix* matrix);
+
+		//! Perform solve phase of LLT (cholFactor should be called before)
+		void cholSolve(const Scalar* b, Scalar* x);
 
 		bool cholesky(const Scalar* b, Scalar* x);
 		bool conjugateGradient(const Scalar* b, Scalar* x, int iters, Scalar err);
@@ -51,6 +59,9 @@ namespace cloth
 
 		// Cholesky
 		cusparseMatDescr_t m_descrA;
+		csrcholInfo_t d_info;
+
+		// CG
 		CudaMvWrapper m_mv_caller;
 
 		/* Device pointer */
@@ -58,6 +69,7 @@ namespace cloth
 		Scalar* d_p;
 		Scalar* d_z;
 		Scalar* d_Ap;
+		void* d_buffer;
 	};
 
 	// Preconditioner

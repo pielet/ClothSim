@@ -1,6 +1,6 @@
 {
 	"duration": 5.0,	// s
-	"dt": 0.001,
+	"dt": 0.01,
 
 	"parameters":[{ // aluminum
 		"mesh_type": 0, // StVK
@@ -16,20 +16,20 @@
 		"poisson_ratio": 0.48,
 		"density": 0.025,	// g/cm^2
 		"thickness": 0.1,	// cm
-		"bending_stiffness": 10,
+		"bending_stiffness": 5,
 		"attachment_stiffness": 1e10
 	}],
 
 	"cloths":[{
-		//"mesh": "meshes/half_tube.obj",
-		"mesh": "meshes/square4.obj",
+		"mesh": "meshes/half_tube.obj",
+		//"mesh": "meshes/square10.obj",
 		"transform":{"rotate_angle": 0/*degree*/, "rotate_axis": [1, 0, 0],"translate": [0, 0, 0]},
 		"parameter": 1
 	}],
 
 	"nonlinear_solver":{
-		"type": 0, // 0 for Newton's Method
-		"iterations": 5,
+		"type": 0, // 0 for Newton's Method, 1 for PD
+		"iterations": 10, 
 		"enable_line_search": 1,
 		"ls_alpha": 0.03,
 		"ls_beta": 0.5
@@ -43,9 +43,9 @@
 
 	"handles":[{
 		"cloth_idx": 0, 
-		"nodes": [],//0, 6, 7, 13, 14, 20, 21, 27, 28, 34
+		"nodes": [0, 6, 7, 13, 14, 20, 21, 27, 28, 34],
 		"start_idx": 0, 
-		"end_idx": 4/*included*/
+		"end_idx": 0
 	}],
 	"motions":[
 		{"type": "translate", "begin": 0, "end": 1, "direction": [1, 0, 0], "distance": 2, "group": 0},
