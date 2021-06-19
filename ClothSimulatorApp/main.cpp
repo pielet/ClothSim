@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 #include "Render/Camera.h"
 #include "Render/Shader.h"
@@ -24,6 +25,7 @@ Camera* g_camera;
 ClothRenderer* g_renderer;
 cloth::ClothSim* g_cloth;
 
+bool g_exit = false;
 bool g_stop = true;
 bool g_step = false;
 
@@ -86,8 +88,7 @@ void keyboard(unsigned char key, int x, int y)
 	switch (key)
 	{
 	case 'q': case 'Q':
-		glutSetOption(GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_ACTION_CONTINUE_EXECUTION);
-		glutLeaveMainLoop();
+		g_exit = true;
 		break;
 	case ' ':
 		g_stop = !g_stop;
@@ -100,6 +101,12 @@ void keyboard(unsigned char key, int x, int y)
 
 void display()
 {
+	if (g_exit)
+	{
+		glutSetOption(GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_ACTION_CONTINUE_EXECUTION);
+		glutLeaveMainLoop();
+	}
+
 	glClearColor(1.f, 1.f, 1.f, 1.f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -107,35 +114,42 @@ void display()
 	Mat4f MVP = g_camera->getPerspectiveMatrix() * g_camera->getViewMatrix();
 	g_shader->setMat4f("MVP", MVP);
 
-	bool update = false;
-
-	try
-	{
-		if (g_stop)
-		{
-			if (g_step)
-			{
-				update = g_cloth->step();
-				g_step = false;
-			}
-		}
-		else update = g_cloth->step();
-	}
-	catch (const std::exception& e)
-	{
-		std::cerr << e.what() << std::endl;
-		glutSetOption(GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_ACTION_CONTINUE_EXECUTION);
-		glutLeaveMainLoop();
-	}
-
-	if (update) g_renderer->ackGeometryChange();
 	g_renderer->draw(g_shader);
-
 	glutSwapBuffers();
 
-	++frame_count;
 	if (g_timer.elapsedSeconds() > 1.0)
 		computePFS();
+}
+
+void simulation()
+{
+	while (!g_exit)
+	{
+		bool update = false;
+
+		try
+		{
+			if (g_stop)
+			{
+				if (g_step)
+				{
+					update = g_cloth->step();
+					g_step = false;
+				}
+				else std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			else update = g_cloth->step();
+		}
+		catch (const std::exception& e)
+		{
+			std::cerr << e.what() << std::endl;
+			g_exit = true;
+			break;
+		}
+
+		if (update) g_renderer->ackGeometryChange();
+		++frame_count;
+	}
 }
 
 int main(int argc, char** argv)
@@ -189,7 +203,9 @@ int main(int argc, char** argv)
 	g_cloth->initialize("../config/scene.json");
 	g_renderer = new ClothRenderer(g_cloth->getNumTotalNodes(), g_cloth->getNumTotalFaces(), g_cloth);
 
+	std::thread sim(simulation);
 	glutMainLoop();
+	sim.join();
 
 	delete g_shader;
 	delete g_camera;
@@ -197,7 +213,7 @@ int main(int argc, char** argv)
 
 	cudaDeviceReset();
 
-	std::cout << "EXIT.";
+	std::cout << "\nEXIT.";
 
 	return 0;
 }

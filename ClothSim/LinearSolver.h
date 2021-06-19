@@ -43,7 +43,7 @@ namespace cloth
 		void cholFactor(SparseMatrix* matrix);
 
 		//! Perform solve phase of LLT (cholFactor should be called before)
-		void cholSolve(const Scalar* b, Scalar* x);
+		void cholSolve(const Scalar* b, Scalar* x, int iter, Scalar err);
 
 		bool cholesky(const Scalar* b, Scalar* x);
 		bool conjugateGradient(const Scalar* b, Scalar* x, int iters, Scalar err);

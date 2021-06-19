@@ -19,6 +19,7 @@
 #include "Utils/MathDef.h"
 #include "Utils/json_loader.h"
 #include "Utils/Cublas.h"
+#include "Utils/IndexableQueue.h"
 #include "Constraints.h"
 #include "SparseMatrix.h"
 #include "LinearSolver.h"
@@ -159,14 +160,14 @@ namespace cloth
 	private:
 		void loadScene(const std::string& fname);
 
-		void NewtonStep(Vec3x* v_next);
+		void NewtonStep(int i, Vec3x* v_k, const Vec3x* x_k);
+		void PDStep(int i, Vec3x* v_k, const Vec3x* x_k);
+		void LBFGSStep(int i, int k, Vec3x* v_k, const Vec3x* x_k);
 		
-		void evaluateGradientAndHessian(const Vec3x* x, const Vec3x* v);
+		void evaluateGradient(int i, const Vec3x* x, const Vec3x* v);
+		void evaluateGradientAndHessian(int i, const Vec3x* x, const Vec3x* v);
 		Scalar evaluateObjectiveValue(int i, const Vec3x* v_next);
 		Scalar lineSearch(int i, const Scalar* gradient_dir, const Scalar* descent_dir, Scalar& step_size);
-
-		void ProjectiveDynamicsStep(Vec3x* v_next);
-		void evaluateGradient(const Vec3x* x, const Vec3x* v);
 
 		//! Simulation parameters
 		Scalar m_time;
@@ -175,6 +176,7 @@ namespace cloth
 
 		IntegrationMethod m_integration_method;
 		int m_integration_iterations;
+		int m_window_size;
 		bool m_enable_line_search;
 		Scalar m_ls_alpha;
 		Scalar m_ls_beta;
@@ -220,6 +222,9 @@ namespace cloth
 		Vec3x* d_g;
 		Vec3x* d_Kv; // damping
 		Scalar* d_out;
+		Vec3x* d_last_g;
+		std::vector<IndexableQueue<Scalar>> m_lbfgs_g_queue;
+		std::vector<IndexableQueue<Scalar>> m_lbfgs_v_queue;
 
 		std::vector<SparseMatrix> m_stiffness_matrix;
 		std::vector<SparseMatrix> m_A;

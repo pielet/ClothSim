@@ -343,19 +343,19 @@ namespace cloth
 			break;
 		}
 
-		std::vector<Vec9x> test_S(m_num_faces);
-		cudaMemcpy(test_S.data(), sigma, test_S.size() * sizeof(Vec9x), cudaMemcpyDeviceToHost);
-		for (int i = 0; i < m_num_faces; ++i) {
-			bool minus = false;
-			for (int j = 0; j < 9; ++j)
-				if (test_S[i](j) < 1e-6) minus = true;
-			if (minus)
-			{
-				std::cout << "face " << i << ": "; 
-				test_S[i].print();
-				std::cout << '\n';
-			}
-		}
+		//std::vector<Vec9x> test_S(m_num_faces);
+		//cudaMemcpy(test_S.data(), sigma, test_S.size() * sizeof(Vec9x), cudaMemcpyDeviceToHost);
+		//for (int i = 0; i < m_num_faces; ++i) {
+		//	bool minus = false;
+		//	for (int j = 0; j < 9; ++j)
+		//		if (test_S[i](j) < 1e-6) minus = true;
+		//	if (minus)
+		//	{
+		//		std::cout << "face " << i << ": "; 
+		//		test_S[i].print();
+		//		std::cout << '\n';
+		//	}
+		//}
 	}
 
 	/********************************* BENDING CONSTRAINTS ****************************/
@@ -405,7 +405,7 @@ namespace cloth
 
 		Scalar cos_rest_angle = n0.normalized().dot(n1.normalized());
 		flat_stiffness[i] = 6 * cos_rest_angle / (a0 + a1) * stiffness;
-		Scalar triple_product = e0.cross(e1).dot(e2) * stiffness;
+		Scalar triple_product = e0.cross(e1).dot(e2);
 		nonflat_stiffness[i] = -6 * e0_norm2 * e0_norm2 / ((a0 + a1) * a0 * a0 * a1 * a1) * triple_product * stiffness;
 	}
 

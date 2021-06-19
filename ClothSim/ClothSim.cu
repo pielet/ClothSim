@@ -1,11 +1,13 @@
 #include "ClothSim.h"
+#include <iostream>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <Eigen/StdVector>
+#include "Utils/Timer.h"
+#include "Utils/MathUtility.h"
 
-#include <iostream>
 
 namespace cloth
 {
@@ -13,7 +15,7 @@ namespace cloth
 	ClothSim::ClothSim(): 
 		m_time(0), m_num_cloths(0), m_num_total_nodes(0), m_num_total_egdes(0), m_num_total_faces(0), m_num_handles(0),
 		d_x(NULL), d_v(NULL), d_mass(NULL), 
-		d_u(NULL), d_g(NULL), d_x_next(NULL), d_v_next(NULL), d_delta_v(NULL), d_Kv(NULL), d_out(NULL)
+		d_u(NULL), d_g(NULL), d_last_g(NULL), d_x_next(NULL), d_v_next(NULL), d_delta_v(NULL), d_Kv(NULL), d_out(NULL)
 	{
 		if (sizeof(Scalar) == 8)
 		{
@@ -34,6 +36,7 @@ namespace cloth
 		if (d_v_next) cudaFree(d_v_next);
 		if (d_delta_v) cudaFree(d_delta_v);
 		if (d_g) cudaFree(d_g);
+		if (d_last_g) cudaFree(d_last_g);
 		if (d_Kv) cudaFree(d_Kv);
 		if (d_out) cudaFree(d_out);
 
@@ -55,11 +58,12 @@ namespace cloth
 
 		cudaMalloc((void**)&d_u, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_g, n_nodes * sizeof(Vec3x));
+		cudaMalloc((void**)&d_last_g, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_x_next, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_v_next, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_delta_v, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_Kv, n_nodes * sizeof(Vec3x));
-		cudaMalloc((void**)&d_out, n_nodes * sizeof(Scalar));
+		cudaMalloc((void**)&d_out, 3 * n_nodes * sizeof(Scalar));
 
 		cudaMemset(d_v, 0, n_nodes * sizeof(Vec3x));
 		cudaMemset(d_mass, 0, n_nodes * sizeof(Scalar));
@@ -72,6 +76,8 @@ namespace cloth
 		m_init_A.resize(m_num_cloths);
 		m_solvers.resize(m_num_cloths);
 		m_mv.resize(m_num_cloths);
+		m_lbfgs_g_queue.resize(m_num_cloths);
+		m_lbfgs_v_queue.resize(m_num_cloths);
 		m_step_size.resize(m_num_cloths, 1.f);
 		m_converged.resize(m_num_cloths, false);
 
@@ -147,8 +153,15 @@ namespace cloth
 
 				break;
 			}
-			case cloth::INTEGRATION_METHOD_PD:
+			case INTEGRATION_METHOD_LBFGS: case INTEGRATION_METHOD_PD:
 			{
+				if (m_integration_method == INTEGRATION_METHOD_LBFGS)
+				{
+					m_lbfgs_g_queue[i].setCapacity(m_window_size, 3 * n_nodes);
+					m_lbfgs_v_queue[i].setCapacity(m_window_size, 3 * n_nodes);
+					std::cout << "Finish prepareing queues.\n";
+				}
+
 				m_A[i].initialize(n_nodes, n_faces, n_edges, m_stretching_constraints[i].getIndices(), m_bending_constraints[i].getIndices());
 				m_stretching_constraints[i].computeWeightedLaplacian(m_A[i]);
 				m_bending_constraints[i].precompute(m_A[i]);
@@ -160,13 +173,13 @@ namespace cloth
 
 				std::cout << "Finish preparing sparse matrix.\n";
 
+				EventTimer timer;
+				timer.start();
 				m_solvers[i].cholFactor(&m_A[i]);
-				std::cout << "Finish initializing solver.\n";
+				std::cout << "Finish initializing solver (" << timer.elapsedMilliseconds() << " ms).\n";
 
 				break;
 			}
-			case cloth::INTEGRATION_METHOD_LBFGS:
-				break;
 			default:
 				break;
 			}
@@ -196,6 +209,7 @@ namespace cloth
 			Json::Value value = root["nonlinear_solver"];
 			parse(m_integration_method, value["type"], INTEGRATION_METHOD_NEWTON);
 			parse(m_integration_iterations, value["iterations"], 5);
+			parse(m_window_size, value["window_size"], 5);
 			parse(m_enable_line_search, value["enable_line_search"], true);
 			parse(m_ls_alpha, value["ls_alpha"], 0.03f);
 			parse(m_ls_beta, value["ls_beta"], 0.5f);
@@ -508,23 +522,35 @@ namespace cloth
 
 		// Integration iteration
 		std::cout << "\n[Start integration " << m_time << "]";
-		bool all_converged = true;
 		for (int k = 0; k < m_integration_iterations; ++k)
 		{
 			std::cout << "\n  Iteration " << k + 1 << ":  ";
-			switch (m_integration_method)
+			for (int i = 0; i < m_num_cloths; ++i)
 			{
-			case INTEGRATION_METHOD_NEWTON:
-				NewtonStep(d_v);
-				break;
-			case INTEGRATION_METHOD_PD:
-				ProjectiveDynamicsStep(d_v);
-				break;
-			case INTEGRATION_METHOD_LBFGS:
-				break;
-			default:
-				break;
+				if (!m_converged[i])
+				{
+					int n_node = getNumNodes(i);
+
+					CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, (Scalar*)&d_x[m_offsets[i]], (Scalar*)&d_x_next[m_offsets[i]]);
+					CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &m_dt, (Scalar*)&d_v[m_offsets[i]], (Scalar*)&d_x_next[m_offsets[i]]);
+
+					switch (m_integration_method)
+					{
+					case INTEGRATION_METHOD_NEWTON:
+						NewtonStep(i, &d_v[m_offsets[i]], &d_x_next[m_offsets[i]]);
+						break;
+					case INTEGRATION_METHOD_PD:
+						PDStep(i, &d_v[m_offsets[i]], &d_x_next[m_offsets[i]]);
+						break;
+					case INTEGRATION_METHOD_LBFGS:
+						LBFGSStep(i, k, &d_v[m_offsets[i]], &d_x_next[m_offsets[i]]);
+						break;
+					default:
+						break;
+					}
+				}
 			}
+			bool all_converged = true;
 			for (bool converge : m_converged) all_converged = all_converged && converge;
 			if (all_converged) break;
 		}
@@ -546,71 +572,47 @@ namespace cloth
 		return true;
 	}
 
-	void ClothSim::NewtonStep(Vec3x* v_next)
+	void ClothSim::NewtonStep(int i, Vec3x* v_k, const Vec3x* x_k)
 	{
-		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * m_num_total_nodes, (Scalar*)d_x, (Scalar*)d_x_next);
-		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &m_dt, (Scalar*)v_next, (Scalar*)d_x_next);
+		int n_node = getNumNodes(i);
 
-		std::vector<Scalar> test;
+		evaluateGradientAndHessian(i, x_k, v_k);
 
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), v_next, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//std::cout << "v_t+1: ";
-		//for (int i = 0; i < test.size(); ++i) {
-		//	printf("%.10f ", test[i]);
-		//}
-		//std::cout << "\n\n";
+		Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
+		Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
 
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), d_x_next, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//std::cout << "x_t+1: ";
-		//for (int i = 0; i < test.size(); ++i) {
-		//	printf("%.10f ", test[i]);
-		//}
-		//std::cout << "\n\n";
+		cudaMemset(delta_v, 0, n_node * sizeof(Vec3x));
 
-		evaluateGradientAndHessian(d_x_next, v_next);
-
-		cudaMemset(d_delta_v, 0, m_num_total_nodes * sizeof(Vec3x));
-		std::vector<Scalar> obj_values(m_num_cloths, 0.f);
-		for (int i = 0; i < m_num_cloths; ++i)
+		if (m_linear_solver_type == LINEAR_SOLVER_DIRECT_LLT)
 		{
-			if (!m_converged[i])
+			Scalar tau = 1.0f;
+			while (!m_solvers[i].cholesky(gradient, delta_v))
 			{
-				Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
-				Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
-				int n_node = getNumNodes(i);
+				m_A[i].addInDiagonal(tau);
+				std::cout << " Add Identity: " << tau;
+				tau *= 10.f;
 
-				if (m_linear_solver_type == LINEAR_SOLVER_DIRECT_LLT)
+				if (tau > 1e6)
 				{
-					Scalar tau = 1.0f;
-					while (!m_solvers[i].cholesky(gradient, delta_v))
-					{
-						m_A[i].addInDiagonal(tau);
-						std::cout << " Add Identity: " << tau;
-						tau *= 10.f;
-
-						if (tau > 1e6)
-						{
-							throw std::runtime_error("[ClothSim::NewtonStep] Linear solver failed: A is not SPD or near singular after regularization.");
-						}
-					}
+					throw std::runtime_error("[ClothSim::NewtonStep] Linear solver failed: A is not SPD or near singular after regularization.");
 				}
-				else
-				{
-					m_solvers[i].conjugateGradient(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
-				}
-
-				Scalar minus_one = -1;
-				CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &minus_one, delta_v);
-
-				obj_values[i] = lineSearch(i, gradient, delta_v, m_step_size[i]);
-				if (m_step_size[i] < 1e-5f) m_converged[i] = true;
-				std::cout << " step size: " << m_step_size[i] << std::endl;
-
-				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v, (Scalar*)&v_next[m_offsets[i]]);
 			}
 		}
+		else
+		{
+			m_solvers[i].conjugateGradient(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
+		}
+
+		Scalar minus_one = -1;
+		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &minus_one, delta_v);
+
+		if (m_enable_line_search) lineSearch(i, gradient, delta_v, m_step_size[i]);
+		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v, (Scalar*)v_k);
+
+		Scalar res;
+		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, gradient, &res);
+		if (sqrt(res) < 1e-6 || m_step_size[i] < 1e-6) m_converged[i] = true;
+		std::cout << " residual: " << sqrt(res) << " step_size: " << m_step_size[i];
 
 		//test.resize(3 * getNumNodes(0));
 		//cudaMemcpy(test.data(), delta_v, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
@@ -638,23 +640,22 @@ namespace cloth
 		grad_f[i] = M[i] * (v_next[i] - u[i]) + h * grad_E[i];
 	}
 
-	void ClothSim::evaluateGradientAndHessian(const Vec3x* x, const Vec3x* v)
+	void ClothSim::evaluateGradientAndHessian(int i, const Vec3x* x, const Vec3x* v)
 	{
-		cudaMemset(d_g, 0, m_num_total_nodes * sizeof(Vec3x));
+		int n_node = getNumNodes(i);
+
+		Vec3x* g = &d_g[m_offsets[i]];
+		Vec3x* u = &d_u[m_offsets[i]];
+		Vec3x* Kv = &d_Kv[m_offsets[i]];
+		Scalar* mass = &d_mass[m_offsets[i]];
+
+		cudaMemset(g, 0, n_node * sizeof(Vec3x));
 
 		// Evaluates gradient and hessian of inner energy
-		for (int i = 0; i < m_num_cloths; ++i)
-		{
-			if (!m_converged[i])
-			{
-				m_A[i].assign(m_init_A[i]); // bending hessian
-				m_bending_constraints[i].computeGradiant(&x[m_offsets[i]], &d_g[m_offsets[i]]); // bending gradient
-				m_stretching_constraints[i].computeGradiantAndHessian(&x[m_offsets[i]], &d_g[m_offsets[i]], m_A[i], true);
-				m_attachment_constraints[i].computeGradiantAndHessian(&x[m_offsets[i]], &d_g[m_offsets[i]], m_A[i]);
-
-				if (m_enable_damping) m_mv[i].mv(); // K * v_t+1
-			}
-		}
+		m_A[i].assign(m_init_A[i]); // bending hessian
+		m_bending_constraints[i].computeGradiant(x, g); // bending gradient
+		m_stretching_constraints[i].computeGradiantAndHessian(x, g, m_A[i], true);
+		m_attachment_constraints[i].computeGradiantAndHessian(x, g, m_A[i]);
 
 		//std::vector<Scalar> test;
 
@@ -678,13 +679,14 @@ namespace cloth
 
 		// \grad f = M * (x_t+1 - y) + h * (\alpha M + \beta K) * (x_t+1 - x_t) + h^2 * \grad E(x_t+1)
 		// \grad f = M * (v_t+1 - u) + h * (\alpha M + \beta K) * v_t+1 + h * \grad E(x_t + h * v_t+1)
-		if (m_enable_damping) {
-			computeGradientWithDampingKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (
-				m_num_total_nodes, m_dt, m_damping_alpha, m_damping_beta, d_mass, v, d_u, d_Kv, d_g, d_g);
+		if (m_enable_damping) 
+		{
+			CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, (Scalar*)v, (Scalar*)&d_v_next[m_offsets[i]]);
+			m_mv[i].mv();
+			computeGradientWithDampingKernel << < get_block_num(n_node), g_block_dim >> > (n_node, m_dt, m_damping_alpha, m_damping_beta, mass, v, u, Kv, g, g);
 		}
 		else {
-			computeGradientWithoutDampingKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (
-				m_num_total_nodes, m_dt, d_mass, v, d_u, d_g, d_g);
+			computeGradientWithoutDampingKernel << < get_block_num(n_node), g_block_dim >> > (n_node, m_dt, mass, v, u, g, g);
 		}
 
 		//test.resize(3 * getNumNodes(0));
@@ -697,22 +699,16 @@ namespace cloth
 		// \grad^2 f = M + h^2 * \grad^2 E
 		// \grad^2 f = M + h^2 * \grad^2 E + h * (\alpha M + \beta K) = (1 + h * \alpha) M + (h * \beta) K + (h*h) \grad^2 E
 		Scalar h2 = m_dt * m_dt, h_beta = m_dt * m_damping_beta;
-		for (int i = 0; i < m_num_cloths; ++i)
+		if (m_enable_damping)
 		{
-			if (!m_converged[i])
-			{
-				if (m_enable_damping)
-				{
-					CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
-					CublasCaller<Scalar>::axpy(m_cublas_handle, m_A[i].getnnz(), &h_beta, m_stiffness_matrix[i].getValue(), m_A[i].getValue());
-					m_A[i].addInDiagonal(&d_mass[m_offsets[i]], 1 + m_dt * m_damping_alpha);
-				}
-				else
-				{
-					CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
-					m_A[i].addInDiagonal(&d_mass[m_offsets[i]]);
-				}
-			}
+			CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
+			CublasCaller<Scalar>::axpy(m_cublas_handle, m_A[i].getnnz(), &h_beta, m_stiffness_matrix[i].getValue(), m_A[i].getValue());
+			m_A[i].addInDiagonal(mass, 1 + m_dt * m_damping_alpha);
+		}
+		else
+		{
+			CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
+			m_A[i].addInDiagonal(mass);
 		}
 
 		//test.resize(m_A[0].getnnz());
@@ -747,8 +743,14 @@ namespace cloth
 	{
 		int n_nodes = getNumNodes(i);
 
-		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_nodes, (Scalar*)&d_x[m_offsets[i]], (Scalar*)&d_x_next[m_offsets[i]]);
-		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_nodes, &m_dt, (Scalar*)v_next, (Scalar*)&d_x_next[m_offsets[i]]);
+		Vec3x* x_next = &d_x_next[m_offsets[i]];
+		Vec3x* u = &d_u[m_offsets[i]];
+		Vec3x* Kv = &d_Kv[m_offsets[i]];
+		Scalar* mass = &d_mass[m_offsets[i]];
+		Scalar* out = &d_out[m_offsets[i]];
+
+		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_nodes, (Scalar*)&d_x[m_offsets[i]], (Scalar*)x_next);
+		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_nodes, &m_dt, (Scalar*)v_next, (Scalar*)x_next);
 
 		// f = 1/2 * ||v_t+1 - u||_M + E + 
 		//     1/2 * h * ||v_t+1||_(\alpha M + \beta K)
@@ -757,21 +759,20 @@ namespace cloth
 		if (m_enable_damping)
 		{
 			m_mv[i].mv(); // FIXME: assuming v_next is d_v_next[m_offsets[i]]
-			computeInertiaWithDampingKernel <<< get_block_num(n_nodes), g_block_dim >>> (
-				n_nodes, m_dt, m_damping_alpha, m_damping_beta, &d_mass[m_offsets[i]], v_next, &d_u[m_offsets[i]], &d_Kv[m_offsets[i]], &d_out[m_offsets[i]]);
+			computeInertiaWithDampingKernel <<< get_block_num(n_nodes), g_block_dim >>> 
+				(n_nodes, m_dt, m_damping_alpha, m_damping_beta, mass, v_next, u, &d_Kv[m_offsets[i]], out);
 			CublasCaller<Scalar>::sum(m_cublas_handle, n_nodes, &d_out[m_offsets[i]], &inertia_energy);
 		}
 		else
 		{
-			computeInertiaWithoutDampingKernel <<< get_block_num(n_nodes), g_block_dim >>> (
-				n_nodes, &d_mass[m_offsets[i]], v_next, &d_u[m_offsets[i]], &d_out[m_offsets[i]]);
+			computeInertiaWithoutDampingKernel <<< get_block_num(n_nodes), g_block_dim >>> (n_nodes, mass, v_next, u, out);
 			CublasCaller<Scalar>::sum(m_cublas_handle, n_nodes, &d_out[m_offsets[i]], &inertia_energy);
 		}
 
 		Scalar inner_energy = 0;
-		inner_energy += m_attachment_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
-		inner_energy += m_bending_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
-		inner_energy += m_stretching_constraints[i].computeEnergy(&d_x_next[m_offsets[i]]);
+		inner_energy += m_attachment_constraints[i].computeEnergy(x_next);
+		inner_energy += m_bending_constraints[i].computeEnergy(x_next);
+		inner_energy += m_stretching_constraints[i].computeEnergy(x_next);
 
 		return inertia_energy + inner_energy;
 	}
@@ -779,7 +780,11 @@ namespace cloth
 	Scalar ClothSim::lineSearch(int i, const Scalar* gradient_dir, const Scalar* descent_dir, Scalar& step_size)
 	{
 		int n_nodes = getNumNodes(i);
-		Scalar current_obj_value = evaluateObjectiveValue(i, &d_v[m_offsets[i]]);
+		Scalar* v = (Scalar*)&d_v[m_offsets[i]];
+		Scalar* v_next = (Scalar*)&d_v_next[m_offsets[i]];
+
+		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_nodes, v, v_next);
+		Scalar current_obj_value = evaluateObjectiveValue(i, (Vec3x*)v_next);
 
 		if (m_enable_line_search)
 		{
@@ -793,10 +798,10 @@ namespace cloth
 				step_size *= m_ls_beta;
 				if (step_size < 1e-5) break;
 
-				CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_nodes, (Scalar*)&d_v[m_offsets[i]], (Scalar*)&d_v_next[m_offsets[i]]);
-				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_nodes, &step_size, descent_dir, (Scalar*)&d_v_next[m_offsets[i]]);
+				CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_nodes, v, v_next);
+				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_nodes, &step_size, descent_dir, v_next);
 
-				next_obj_value = evaluateObjectiveValue(i, &d_v_next[m_offsets[i]]);
+				next_obj_value = evaluateObjectiveValue(i, (Vec3x*)v_next);
 
 				rhs = current_obj_value + m_ls_alpha * step_size * grad_dot_desc;
 
@@ -812,73 +817,125 @@ namespace cloth
 		else return current_obj_value;
 	}
 
-	void ClothSim::ProjectiveDynamicsStep(Vec3x* v_next)
+	void ClothSim::PDStep(int i, Vec3x* v_k, const Vec3x* x_k)
 	{
-		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * m_num_total_nodes, (Scalar*)d_x, (Scalar*)d_x_next);
-		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &m_dt, (Scalar*)v_next, (Scalar*)d_x_next);
+		EventTimer timer;
 
-		evaluateGradient(d_x_next, v_next);
+		int n_node = getNumNodes(i);
+		Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
+		Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
 
-		Scalar minus_one = -1;
-		cudaMemset(d_delta_v, 0, m_num_total_nodes * sizeof(Vec3x));
-		for (int i = 0; i < m_num_cloths; ++i)
-		{
-			// Linear solver
-			if (!m_converged[i])
-			{
-				Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
-				Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
-				int n_node = getNumNodes(i);
+		timer.start();
+		evaluateGradient(i, x_k, v_k);
+		std::cout << " evaluateGradient: " << timer.elapsedMilliseconds();
 
-				m_solvers[i].cholSolve(gradient, delta_v);
+		// linear solve
+		timer.start();
+		m_solvers[i].cholSolve(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
+		//vectorDot <<< get_block_num(3 * n_node), g_block_dim >>> (3 * n_node, gradient, &d_out[3 * m_offsets[i]], delta_v);
+		std::cout << " cholSolve: " << timer.elapsedMilliseconds();
 
-				Scalar res;
-				CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, gradient, &res);
-				if (sqrt(res) < 1e-6) m_converged[i] = true;
-				std::cout << " residual: " << sqrt(res);
+		Scalar neg_one = -1.0f;
+		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &neg_one, delta_v, (Scalar*)v_k);
 
-				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &minus_one, delta_v, (Scalar*)&v_next[m_offsets[i]]);
-			}
-		}
-
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), delta_v, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//std::cout << "delta v: ";
-		//for (int i = 0; i < test.size(); ++i) {
-		//	std::cout << test[i] << ' ';
-		//}
-		//std::cout << "\n\n";
+		Scalar res;
+		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, gradient, &res);
+		if (sqrt(res) < 1e-6) m_converged[i] = true;
+		std::cout << " residual: " << sqrt(res);
 	}
 
-	void ClothSim::evaluateGradient(const Vec3x* x, const Vec3x* v)
+	void ClothSim::LBFGSStep(int i, int k, Vec3x* v_k, const Vec3x* x_k)
+	{
+		EventTimer timer;
+
+		int n_node = getNumNodes(i);
+		Scalar* last_g = (Scalar*)&d_last_g[m_offsets[i]];
+		Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
+		Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
+
+		timer.start();
+		evaluateGradient(i, x_k, v_k);
+		std::cout << " evaluateGradient: " << timer.elapsedMilliseconds();
+
+		Scalar one = 1.f, neg_one = -1.f;
+		cudaMemset(delta_v, 0, n_node * sizeof(Vec3x));
+
+		if (k == 0) // first iteration
+		{
+			m_lbfgs_g_queue[i].empty();
+			m_lbfgs_v_queue[i].empty();
+		}
+		else
+		{
+			CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &neg_one, last_g);
+			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &one, gradient, last_g);
+			m_lbfgs_g_queue[i].enqueue(last_g);
+		}
+		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, gradient, last_g);
+
+		int size = m_lbfgs_g_queue[i].size();
+		std::vector<Scalar> pho(size);
+		std::vector<Scalar> zeta(size);
+
+		// first loop
+		for (int w = size - 1; w >= 0; --w)
+		{
+			const Scalar* s = m_lbfgs_v_queue[i][w];
+			const Scalar* t = m_lbfgs_g_queue[i][w];
+
+			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, s, t, &pho[w]);
+			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, s, gradient, &zeta[w]);
+			zeta[w] /= pho[w];
+
+			Scalar neg_zeta = -zeta[w];
+			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &neg_zeta, t, gradient);
+		}
+
+		// linear solve
+		timer.start();
+		m_solvers[i].cholSolve(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
+		std::cout << " cholSolve: " << timer.elapsedMilliseconds();
+
+		// second loop
+		for (int w = 0; w < size; ++w)
+		{
+			const Scalar* s = m_lbfgs_v_queue[i][w];
+			const Scalar* t = m_lbfgs_g_queue[i][w];
+
+			Scalar eta;
+			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, t, delta_v, &eta);
+			eta = zeta[w] - eta / pho[w];
+			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &eta, s, delta_v);
+		}
+
+		// line-search
+		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &neg_one, delta_v);
+		if (m_enable_line_search) lineSearch(i, last_g, delta_v, m_step_size[i]);
+
+		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v);
+		m_lbfgs_v_queue[i].enqueue(delta_v);
+		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &one, delta_v, (Scalar*)v_k);
+
+		Scalar res;
+		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, last_g, &res);
+		if (sqrt(res) < 1e-6 || m_step_size[i] < 1e-6) m_converged[i] = true;
+		std::cout << " residual: " << sqrt(res) << " step_size: " << m_step_size[i];
+	}
+
+	void ClothSim::evaluateGradient(int i, const Vec3x* x, const Vec3x* v)
 	{
 		cudaMemset(d_g, 0, m_num_total_nodes * sizeof(Vec3x));
 
 		// Evaluates gradient of inner energy
-		for (int i = 0; i < m_num_cloths; ++i)
-		{
-			if (!m_converged[i])
-			{
-				const Vec3x* xi = &x[m_offsets[i]];
-				Vec3x* gi = &d_g[m_offsets[i]];
-				m_attachment_constraints[i].computeGradient(xi, gi);
-				m_stretching_constraints[i].computeGradient(xi, gi);
-				m_bending_constraints[i].computeGradiant(xi, gi);
-			}
-		}
+		Vec3x* g = &d_g[m_offsets[i]];
 
-		//std::vector<Scalar> test;
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), d_g, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//std::cout << "gradient: ";
-		//for (int i = 0; i < test.size(); ++i) {
-		//	std::cout << test[i] << ' ';
-		//}
-		//std::cout << "\n\n";
+		m_attachment_constraints[i].computeGradient(x, g);
+		m_stretching_constraints[i].computeGradient(x, g);
+		m_bending_constraints[i].computeGradiant(x, g);
 
 		// \grad f = M * (v_t+1 - u) + h * \grad E(x_t + h * v_t+1)
 		computeGradientWithoutDampingKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (
-			m_num_total_nodes, m_dt, d_mass, v, d_u, d_g, d_g);
+			getNumNodes(i), m_dt, &d_mass[m_offsets[i]], v, &d_u[m_offsets[i]], g, g);
 	}
 
 	const FaceIdx* ClothSim::getFaceIndices(int i) const

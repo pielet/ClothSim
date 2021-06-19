@@ -12,10 +12,12 @@
 #define CUDA_CALLABLE_MEMBER __host__ __device__
 #define CUDA_MEMBER __device__
 #define INLINE __forceinline__
+#define GLOBAL __global__
 #else
 #define CUDA_CALLABLE_MEMBER
 #define CUDA_MEMBER
 #define INLINE inline
+#define GLOBAL
 #endif
 
 typedef float Scalar;	// global scope

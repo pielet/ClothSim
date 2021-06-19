@@ -109,6 +109,7 @@
     <ClInclude Include="SparseMatrix.h" />
     <ClInclude Include="Utils\Cublas.h" />
     <ClInclude Include="Utils\helper_cuda.h" />
+    <ClInclude Include="Utils\IndexableQueue.h" />
     <ClInclude Include="Utils\json_loader.h" />
     <ClInclude Include="Utils\MathDef.h" />
     <ClInclude Include="Utils\MathUtility.h" />

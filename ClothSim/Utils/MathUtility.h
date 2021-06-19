@@ -9,6 +9,14 @@ namespace cloth
 		return x * x;
 	}
 
+	//GLOBAL void vectorDot(int n, const Scalar* x, const Scalar* y, Scalar* z)
+	//{
+	//	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	//	if (i >= n) return;
+
+	//	z[i] = x[i] * y[i];
+	//}
+
 	// Compute (a^2 + b^2)^(1/2) without destructive underflow or overflow
 	INLINE CUDA_MEMBER Scalar pythag(Scalar a, Scalar b)
 	{

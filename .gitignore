@@ -3,6 +3,7 @@ x64/
 *.pdb
 *.vcxproj.user
 *.vcxproj.filters
+*.ncsettings
 ClothSim/x64/
 ClothSimulatorApp/x64/
 meshes/backup/

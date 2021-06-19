@@ -34,4 +34,9 @@ Implicit Euler integration -> nonlinear equation -> solved with Newton's method 
 * [ ] output and checkpoint
 * [ ] **Neo-Hookean model**
 * [x] **Projective Dynamics**
+* [x] L-BFGS
 * [ ] collision detection
+
+## Problems
+
+* The sheet rotates down much slower when use PD (bug or numerical inaccuracy?) -> Seems it's the drawback of PD itself, see [Stable Constrained Dynamics](https://hal.inria.fr/hal-01157835v2/document) and [WRAPD](https://www-users.cs.umn.edu/~brow2327/wrapd/).

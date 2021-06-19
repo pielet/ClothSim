@@ -342,7 +342,7 @@ namespace cloth
 		}
 	}
 
-	void LinearSolver::cholSolve(const Scalar* b, Scalar* x)
+	void LinearSolver::cholSolve(const Scalar* b, Scalar* x, int iters, Scalar err)
 	{
 		CusolverCaller<Scalar>::cholSolve(m_cusolverSpHandle, m_n, b, x, d_info, d_buffer);
 	}
@@ -370,8 +370,7 @@ namespace cloth
 		bool status = m_precond->analysis();
 		if (!status)
 		{
-			std::cerr << "Preconditioner analysis failed. EXIT." << std::endl;
-			exit(-1);
+			std::runtime_error("[LinearSolver::conjugateGradient] Preconditioner analysis failed.");
 		}
 
 		// r0 = b - Ax
