@@ -342,7 +342,7 @@ namespace cloth
 		}
 	}
 
-	void LinearSolver::cholSolve(const Scalar* b, Scalar* x, int iters, Scalar err)
+	void LinearSolver::cholSolve(const Scalar* b, Scalar* x)
 	{
 		CusolverCaller<Scalar>::cholSolve(m_cusolverSpHandle, m_n, b, x, d_info, d_buffer);
 	}

@@ -23,6 +23,7 @@
 #include "Constraints.h"
 #include "SparseMatrix.h"
 #include "LinearSolver.h"
+#include "ExternalCollision.h"
 
 namespace cloth
 {
@@ -160,12 +161,14 @@ namespace cloth
 	private:
 		void loadScene(const std::string& fname);
 
-		void NewtonStep(int i, Vec3x* v_k, const Vec3x* x_k);
-		void PDStep(int i, Vec3x* v_k, const Vec3x* x_k);
-		void LBFGSStep(int i, int k, Vec3x* v_k, const Vec3x* x_k);
+		bool NewtonStep(Vec3x* v_k, const Vec3x* x_k);
+		bool PDStep(Vec3x* v_k, const Vec3x* x_k);
+		bool LBFGSStep(int k, Vec3x* v_k, const Vec3x* x_k);
+
+		void PDComputeExternalCollisionImpulse(const Vec3x* x_t, const Vec3x* v_k);
 		
-		void evaluateGradient(int i, const Vec3x* x, const Vec3x* v);
-		void evaluateGradientAndHessian(int i, const Vec3x* x, const Vec3x* v);
+		void evaluateGradient(const Vec3x* x, const Vec3x* v);
+		void evaluateGradientAndHessian(const Vec3x* x, const Vec3x* v);
 		Scalar evaluateObjectiveValue(int i, const Vec3x* v_next);
 		Scalar lineSearch(int i, const Scalar* gradient_dir, const Scalar* descent_dir, Scalar& step_size);
 
@@ -201,18 +204,15 @@ namespace cloth
 		int m_num_total_egdes;
 		int m_num_handles;
 
-		//! Device pointors
+		//! States
 		Vec3x* d_x;
 		Vec3x* d_v;
 		Scalar* d_mass;
 
+		//! Constrains
 		std::vector<StretchingConstraints> m_stretching_constraints;
 		std::vector<BendingConstraints> m_bending_constraints;
 		std::vector<AttachmentConstraints> m_attachment_constraints;
-
-		//! Animation
-		std::vector<HandleGroup> m_handle_groups;
-		//std::vector<MotionScript> m_motion_scripts;
 
 		//! Solver variables
 		Vec3x* d_u;
@@ -234,7 +234,19 @@ namespace cloth
 		std::vector<CudaMvWrapper> m_mv; // damping
 
 		std::vector<Scalar> m_step_size;
-		std::vector<bool> m_converged;
+
+		//! External collision stuff
+		bool m_enable_external_collision;
+		Scalar m_external_mu;
+		Scalar m_external_thichness;
+		std::vector<ExternalObject*> m_external_objects;
+		int* d_external_collision_flag;
+		ExternalCollisionInfo* d_external_collision_info;
+		Vec3x* d_r_ext;
+
+		//! Animation
+		std::vector<HandleGroup> m_handle_groups;
+		//std::vector<MotionScript> m_motion_scripts;
 
 		//! CUDA handles
 		cublasHandle_t m_cublas_handle;

@@ -25,6 +25,10 @@ Sparse matrix construction method is adapted from [CAMA](http://gamma.cs.unc.edu
 
 Implicit Euler integration -> nonlinear equation -> solved with Newton's method -> linear equation -> solved with LLT/CG
 
+Collision:
+
+* support [dry fritional contact for PD](https://hal.inria.fr/hal-02563307v2/document)
+
 ## TODO
 
 * [x] **definiteness fix for stretching energy hessian**
@@ -35,8 +39,10 @@ Implicit Euler integration -> nonlinear equation -> solved with Newton's method 
 * [ ] **Neo-Hookean model**
 * [x] **Projective Dynamics**
 * [x] L-BFGS
-* [ ] collision detection
+* [x] collision detection & handling (implicit sphere & plane)
 
 ## Problems
 
-* The sheet rotates down much slower when use PD (bug or numerical inaccuracy?) -> Seems it's the drawback of PD itself, see [Stable Constrained Dynamics](https://hal.inria.fr/hal-01157835v2/document) and [WRAPD](https://www-users.cs.umn.edu/~brow2327/wrapd/).
+* The sheet rotates down much slower when use PD (large Young's modulus) -> Seems it's the drawback of PD itself, see [Stable Constrained Dynamics](https://hal.inria.fr/hal-01157835v2/document) and [WRAPD](https://www-users.cs.umn.edu/~brow2327/wrapd/).
+* Denser mesh seems heavier (bug) -> add shape scale (edge length) to bending stiffness
+

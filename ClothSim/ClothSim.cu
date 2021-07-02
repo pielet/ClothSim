@@ -4,6 +4,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <thrust/scan.h>
+#include <thrust/execution_policy.h>
 #include <Eigen/StdVector>
 #include "Utils/Timer.h"
 #include "Utils/MathUtility.h"
@@ -27,6 +29,9 @@ namespace cloth
 
 	ClothSim::~ClothSim()
 	{
+		for (auto op : m_external_objects)
+			if (!op) delete op;
+
 		if (d_x) cudaFree(d_x);
 		if (d_v) cudaFree(d_v);
 		if (d_mass) cudaFree(d_mass);
@@ -39,6 +44,10 @@ namespace cloth
 		if (d_last_g) cudaFree(d_last_g);
 		if (d_Kv) cudaFree(d_Kv);
 		if (d_out) cudaFree(d_out);
+
+		if (d_external_collision_flag) cudaFree(d_external_collision_flag);
+		if (d_external_collision_info) cudaFree(d_external_collision_info);
+		if (d_r_ext) cudaFree(d_r_ext);
 
 		cublasDestroy(m_cublas_handle);
 	}
@@ -65,8 +74,13 @@ namespace cloth
 		cudaMalloc((void**)&d_Kv, n_nodes * sizeof(Vec3x));
 		cudaMalloc((void**)&d_out, 3 * n_nodes * sizeof(Scalar));
 
+		cudaMalloc((void**)&d_external_collision_flag, 2 * (n_nodes + 1) * sizeof(int));
+		cudaMalloc((void**)&d_external_collision_info, 2 * n_nodes * sizeof(ExternalCollisionInfo));
+		cudaMalloc((void**)&d_r_ext, n_nodes * sizeof(Vec3x));
+
 		cudaMemset(d_v, 0, n_nodes * sizeof(Vec3x));
 		cudaMemset(d_mass, 0, n_nodes * sizeof(Scalar));
+		cudaMemset(d_r_ext, 0, n_nodes * sizeof(Vec3x));
 
 		m_stretching_constraints.resize(m_num_cloths);
 		m_bending_constraints.resize(m_num_cloths);
@@ -79,7 +93,6 @@ namespace cloth
 		m_lbfgs_g_queue.resize(m_num_cloths);
 		m_lbfgs_v_queue.resize(m_num_cloths);
 		m_step_size.resize(m_num_cloths, 1.f);
-		m_converged.resize(m_num_cloths, false);
 
 		m_num_total_faces = 0;
 		m_num_total_egdes = 0;
@@ -219,6 +232,11 @@ namespace cloth
 			parse(m_linear_solver_iterations, value["iterations"], 200);
 			parse(m_linear_solver_error, value["error"], 1e-3f);
 
+			value = root["external_collision"];
+			parse(m_enable_external_collision, value["enable"], false);
+			parse(m_external_mu, value["mu"], 0.3);
+			parse(m_external_thichness, value["thickness"], 0.01);
+
 			parse(m_gravity, root["gravity"]);
 			parse(m_enable_damping, root["enable_damping"], true);
 			parse(m_damping_alpha, root["damping_alpha"]);
@@ -265,6 +283,27 @@ namespace cloth
 			//	m_motion_scripts.emplace_back(root["motions"][i], m_handle_groups);
 			//}
 			//std::cout << "Finish loading motions.\n";
+
+			// load external objects
+			Vec3x origin, dir;
+			Scalar radius;
+			for (const auto& object : root["objects"])
+			{
+				std::string type = object["type"].asString();
+
+				if (type == "sphere")
+				{
+					parse(origin, object["origin"]);
+					parse(radius, object["radius"]);
+					m_external_objects.push_back(new Sphere(origin, radius));
+				}
+				else if (type == "plane")
+				{
+					parse(origin, object["origin"]);
+					parse(dir, object["dir"]);
+					m_external_objects.push_back(new Plane(origin, dir));
+				}
+			}
 		}
 		catch (const Json::RuntimeError& e)
 		{
@@ -517,42 +556,41 @@ namespace cloth
 		for (int i = 0; i < m_num_cloths; ++i)
 		{
 			m_step_size[i] = 1.f;
-			m_converged[i] = false;
+		}
+		if (m_enable_external_collision)
+		{
+			cudaMemset(d_external_collision_flag, 0, 2 * (m_num_total_nodes + 1) * sizeof(int));
+			cudaMemset(d_external_collision_info, 0, 2 * m_num_total_nodes * sizeof(ExternalCollisionInfo));
 		}
 
 		// Integration iteration
 		std::cout << "\n[Start integration " << m_time << "]";
+		bool converged = false;
 		for (int k = 0; k < m_integration_iterations; ++k)
 		{
 			std::cout << "\n  Iteration " << k + 1 << ":  ";
 			for (int i = 0; i < m_num_cloths; ++i)
 			{
-				if (!m_converged[i])
+				CublasCaller<Scalar>::copy(m_cublas_handle, 3 * m_num_total_nodes, (Scalar*)d_x, (Scalar*)d_x_next);
+				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &m_dt, (Scalar*)d_v, (Scalar*)d_x_next);
+
+				switch (m_integration_method)
 				{
-					int n_node = getNumNodes(i);
-
-					CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, (Scalar*)&d_x[m_offsets[i]], (Scalar*)&d_x_next[m_offsets[i]]);
-					CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &m_dt, (Scalar*)&d_v[m_offsets[i]], (Scalar*)&d_x_next[m_offsets[i]]);
-
-					switch (m_integration_method)
-					{
-					case INTEGRATION_METHOD_NEWTON:
-						NewtonStep(i, &d_v[m_offsets[i]], &d_x_next[m_offsets[i]]);
-						break;
-					case INTEGRATION_METHOD_PD:
-						PDStep(i, &d_v[m_offsets[i]], &d_x_next[m_offsets[i]]);
-						break;
-					case INTEGRATION_METHOD_LBFGS:
-						LBFGSStep(i, k, &d_v[m_offsets[i]], &d_x_next[m_offsets[i]]);
-						break;
-					default:
-						break;
-					}
+				case INTEGRATION_METHOD_NEWTON:
+					converged = NewtonStep(d_v, d_x_next);
+					break;
+				case INTEGRATION_METHOD_PD:
+					converged = PDStep(d_v, d_x_next);
+					break;
+				case INTEGRATION_METHOD_LBFGS:
+					converged = LBFGSStep(k, d_v, d_x_next);
+					break;
+				default:
+					break;
 				}
+
 			}
-			bool all_converged = true;
-			for (bool converge : m_converged) all_converged = all_converged && converge;
-			if (all_converged) break;
+			if (converged) break;
 		}
 
 		// Updates states
@@ -572,55 +610,59 @@ namespace cloth
 		return true;
 	}
 
-	void ClothSim::NewtonStep(int i, Vec3x* v_k, const Vec3x* x_k)
+	bool ClothSim::NewtonStep(Vec3x* v_k, const Vec3x* x_k)
 	{
-		int n_node = getNumNodes(i);
+		evaluateGradientAndHessian(x_k, v_k);
 
-		evaluateGradientAndHessian(i, x_k, v_k);
+		// some collision steps
 
-		Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
-		Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
+		std::vector<bool> converged(m_num_cloths, false);
 
-		cudaMemset(delta_v, 0, n_node * sizeof(Vec3x));
-
-		if (m_linear_solver_type == LINEAR_SOLVER_DIRECT_LLT)
+		for (int i = 0; i < m_num_cloths; ++i)
 		{
-			Scalar tau = 1.0f;
-			while (!m_solvers[i].cholesky(gradient, delta_v))
-			{
-				m_A[i].addInDiagonal(tau);
-				std::cout << " Add Identity: " << tau;
-				tau *= 10.f;
+			int n_node = getNumNodes(i);
 
-				if (tau > 1e6)
+			Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
+			Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
+
+			cudaMemset(delta_v, 0, n_node * sizeof(Vec3x));
+
+			if (m_linear_solver_type == LINEAR_SOLVER_DIRECT_LLT)
+			{
+				Scalar tau = 1.0f;
+				while (!m_solvers[i].cholesky(gradient, delta_v))
 				{
-					throw std::runtime_error("[ClothSim::NewtonStep] Linear solver failed: A is not SPD or near singular after regularization.");
+					m_A[i].addInDiagonal(tau);
+					std::cout << " Add Identity: " << tau;
+					tau *= 10.f;
+
+					if (tau > 1e6)
+					{
+						throw std::runtime_error("[ClothSim::NewtonStep] Linear solver failed: A is not SPD or near singular after regularization.");
+					}
 				}
 			}
+			else
+			{
+				m_solvers[i].conjugateGradient(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
+			}
+
+			Scalar minus_one = -1;
+			CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &minus_one, delta_v);
+
+			if (m_enable_line_search) lineSearch(i, gradient, delta_v, m_step_size[i]);
+			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v, (Scalar*)v_k);
+
+			Scalar res;
+			CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, gradient, &res);
+			if (sqrt(res) < 1e-6 || m_step_size[i] < 1e-6) converged[i] = true;
+			std::cout << "[cloth " << i << "] residual: " << sqrt(res) << " step_size: " << m_step_size[i];
 		}
-		else
-		{
-			m_solvers[i].conjugateGradient(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
-		}
 
-		Scalar minus_one = -1;
-		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &minus_one, delta_v);
+		bool all_converged = true;
+		for (const auto& b_con : converged) all_converged = all_converged && b_con;
 
-		if (m_enable_line_search) lineSearch(i, gradient, delta_v, m_step_size[i]);
-		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v, (Scalar*)v_k);
-
-		Scalar res;
-		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, gradient, &res);
-		if (sqrt(res) < 1e-6 || m_step_size[i] < 1e-6) m_converged[i] = true;
-		std::cout << " residual: " << sqrt(res) << " step_size: " << m_step_size[i];
-
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), delta_v, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//std::cout << "delta v: ";
-		//for (int i = 0; i < test.size(); ++i) {
-		//	std::cout << test[i] << ' ';
-		//}
-		//std::cout << "\n\n";
+		return all_converged;
 	}
 
 	__global__ void computeGradientWithDampingKernel(int n, Scalar h, Scalar alpha, Scalar beta, Scalar* M, const Vec3x* v_next, const Vec3x* u, const Vec3x* Kv,
@@ -640,86 +682,52 @@ namespace cloth
 		grad_f[i] = M[i] * (v_next[i] - u[i]) + h * grad_E[i];
 	}
 
-	void ClothSim::evaluateGradientAndHessian(int i, const Vec3x* x, const Vec3x* v)
+	void ClothSim::evaluateGradientAndHessian(const Vec3x* x_k, const Vec3x* v_k)
 	{
-		int n_node = getNumNodes(i);
+		cudaMemset(d_g, 0, m_num_total_nodes * sizeof(Vec3x));
+		for (int i = 0; i < m_num_cloths; ++i)
+		{
+			const Vec3x* x = &x_k[m_offsets[i]];
+			Vec3x* g = &d_g[m_offsets[i]];
 
-		Vec3x* g = &d_g[m_offsets[i]];
-		Vec3x* u = &d_u[m_offsets[i]];
-		Vec3x* Kv = &d_Kv[m_offsets[i]];
-		Scalar* mass = &d_mass[m_offsets[i]];
-
-		cudaMemset(g, 0, n_node * sizeof(Vec3x));
-
-		// Evaluates gradient and hessian of inner energy
-		m_A[i].assign(m_init_A[i]); // bending hessian
-		m_bending_constraints[i].computeGradiant(x, g); // bending gradient
-		m_stretching_constraints[i].computeGradiantAndHessian(x, g, m_A[i], true);
-		m_attachment_constraints[i].computeGradiantAndHessian(x, g, m_A[i]);
-
-		//std::vector<Scalar> test;
-
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), d_g, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//std::cout << "gradient: ";
-		//for (int i = 0; i < test.size(); ++i) {
-		//	std::cout << test[i] << ' ';
-		//}
-		//std::cout << "\n\n";
-
-		//test.resize(m_A[0].getnnz());
-		//cudaMemcpy(test.data(), m_A[0].getValue(), test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//for (int i = 0; i < 12; ++i)
-		//{
-		//	for (int j = 0; j < 12; ++j)
-		//		std::cout << test[12 * i + j] << ' ';
-		//	std::cout << "\n";
-		//}
-		//std::cout << "\n";
+			// Evaluates gradient and hessian of inner energy
+			m_A[i].assign(m_init_A[i]); // bending hessian
+			m_bending_constraints[i].computeGradiant(x, g); // bending gradient
+			m_stretching_constraints[i].computeGradiantAndHessian(x, g, m_A[i], true);
+			m_attachment_constraints[i].computeGradiantAndHessian(x, g, m_A[i]);
+		}
 
 		// \grad f = M * (x_t+1 - y) + h * (\alpha M + \beta K) * (x_t+1 - x_t) + h^2 * \grad E(x_t+1)
 		// \grad f = M * (v_t+1 - u) + h * (\alpha M + \beta K) * v_t+1 + h * \grad E(x_t + h * v_t+1)
 		if (m_enable_damping) 
 		{
-			CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, (Scalar*)v, (Scalar*)&d_v_next[m_offsets[i]]);
-			m_mv[i].mv();
-			computeGradientWithDampingKernel << < get_block_num(n_node), g_block_dim >> > (n_node, m_dt, m_damping_alpha, m_damping_beta, mass, v, u, Kv, g, g);
+			CublasCaller<Scalar>::copy(m_cublas_handle, 3 * m_num_total_nodes, (Scalar*)v_k, (Scalar*)d_v_next);
+			for (auto& mv : m_mv) mv.mv();
+			computeGradientWithDampingKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> 
+				(m_num_total_nodes, m_dt, m_damping_alpha, m_damping_beta, d_mass, v_k, d_u, d_Kv, d_g, d_g);
 		}
 		else {
-			computeGradientWithoutDampingKernel << < get_block_num(n_node), g_block_dim >> > (n_node, m_dt, mass, v, u, g, g);
+			computeGradientWithoutDampingKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (m_num_total_nodes, m_dt, d_mass, v_k, d_u, d_g, d_g);
 		}
-
-		//test.resize(3 * getNumNodes(0));
-		//cudaMemcpy(test.data(), d_g, test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//for (int i = 0; i < test.size(); ++i) {
-		//	std::cout << test[i] << ' ';
-		//}
-		//std::cout << "\n\n";
 
 		// \grad^2 f = M + h^2 * \grad^2 E
 		// \grad^2 f = M + h^2 * \grad^2 E + h * (\alpha M + \beta K) = (1 + h * \alpha) M + (h * \beta) K + (h*h) \grad^2 E
 		Scalar h2 = m_dt * m_dt, h_beta = m_dt * m_damping_beta;
-		if (m_enable_damping)
+		for (int i = 0; i < m_num_cloths; ++i)
 		{
-			CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
-			CublasCaller<Scalar>::axpy(m_cublas_handle, m_A[i].getnnz(), &h_beta, m_stiffness_matrix[i].getValue(), m_A[i].getValue());
-			m_A[i].addInDiagonal(mass, 1 + m_dt * m_damping_alpha);
+			Scalar* mass = &d_mass[m_offsets[i]];
+			if (m_enable_damping)
+			{
+				CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
+				CublasCaller<Scalar>::axpy(m_cublas_handle, m_A[i].getnnz(), &h_beta, m_stiffness_matrix[i].getValue(), m_A[i].getValue());
+				m_A[i].addInDiagonal(mass, 1 + m_dt * m_damping_alpha);
+			}
+			else
+			{
+				CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
+				m_A[i].addInDiagonal(mass);
+			}
 		}
-		else
-		{
-			CublasCaller<Scalar>::scal(m_cublas_handle, m_A[i].getnnz(), &h2, m_A[i].getValue());
-			m_A[i].addInDiagonal(mass);
-		}
-
-		//test.resize(m_A[0].getnnz());
-		//cudaMemcpy(test.data(), m_A[0].getValue(), test.size() * sizeof(Scalar), cudaMemcpyDeviceToHost);
-		//for (int i = 0; i < 12; ++i)
-		//{
-		//	for (int j = 0; j < 12; ++j)
-		//		std::cout << test[12 * i + j] << ' ';
-		//	std::cout << "\n";
-		//}
-		//std::cout << "\n";
 	}
 
 	__global__ void computeInertiaWithDampingKernel(int n, Scalar h, Scalar alpha, Scalar beta, const Scalar* M, const Vec3x* v_next, const Vec3x* u, 
@@ -817,125 +825,250 @@ namespace cloth
 		else return current_obj_value;
 	}
 
-	void ClothSim::PDStep(int i, Vec3x* v_k, const Vec3x* x_k)
+	__global__ void vectorDot(int n, const Scalar* x, const Scalar* y, Scalar* z)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n) return;
+
+		z[i] = x[i] * y[i];
+	}
+
+	bool ClothSim::PDStep(Vec3x* v_k, const Vec3x* x_k)
 	{
 		EventTimer timer;
-
-		int n_node = getNumNodes(i);
-		Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
-		Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
+		Scalar one = 1.0f, neg_one = -1.0f;
 
 		timer.start();
-		evaluateGradient(i, x_k, v_k);
+		evaluateGradient(x_k, v_k);
 		std::cout << " evaluateGradient: " << timer.elapsedMilliseconds();
+
+		if (m_enable_external_collision)
+		{
+			timer.start();
+			PDComputeExternalCollisionImpulse(d_x, v_k);
+			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &neg_one, (Scalar*)d_r_ext, (Scalar*)d_g);
+			std::cout << " compute r_ext: " << timer.elapsedMilliseconds();
+		}
 
 		// linear solve
 		timer.start();
-		m_solvers[i].cholSolve(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
-		//vectorDot <<< get_block_num(3 * n_node), g_block_dim >>> (3 * n_node, gradient, &d_out[3 * m_offsets[i]], delta_v);
+		for (int i = 0; i < m_num_cloths; ++i)
+		{
+			Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
+			Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
+
+			m_solvers[i].cholSolve(gradient, delta_v);
+			//m_A[i].invDiagonal(&d_out[3 * m_offsets[i]]);
+			//vectorDot <<< get_block_num(3 * n_node), g_block_dim >>> (3 * n_node, gradient, &d_out[3 * m_offsets[i]], delta_v);
+		}
 		std::cout << " cholSolve: " << timer.elapsedMilliseconds();
 
-		Scalar neg_one = -1.0f;
-		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &neg_one, delta_v, (Scalar*)v_k);
+		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * m_num_total_nodes, &neg_one, (Scalar*)d_delta_v, (Scalar*)v_k);
 
 		Scalar res;
-		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, gradient, &res);
-		if (sqrt(res) < 1e-6) m_converged[i] = true;
+		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * m_num_total_nodes, (Scalar*)d_g, &res);
 		std::cout << " residual: " << sqrt(res);
+
+		if (sqrt(res) < 1e-6) return true;
+		else return false;
 	}
 
-	void ClothSim::LBFGSStep(int i, int k, Vec3x* v_k, const Vec3x* x_k)
+	bool ClothSim::LBFGSStep(int k, Vec3x* v_k, const Vec3x* x_k)
 	{
 		EventTimer timer;
 
-		int n_node = getNumNodes(i);
-		Scalar* last_g = (Scalar*)&d_last_g[m_offsets[i]];
-		Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
-		Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
-
 		timer.start();
-		evaluateGradient(i, x_k, v_k);
+		evaluateGradient(x_k, v_k);
 		std::cout << " evaluateGradient: " << timer.elapsedMilliseconds();
 
 		Scalar one = 1.f, neg_one = -1.f;
-		cudaMemset(delta_v, 0, n_node * sizeof(Vec3x));
+		cudaMemset(d_delta_v, 0, m_num_total_nodes * sizeof(Vec3x));
+		std::vector<bool> converged(m_num_cloths, false);
 
-		if (k == 0) // first iteration
+		for (int i = 0; i < m_num_cloths; ++i)
 		{
-			m_lbfgs_g_queue[i].empty();
-			m_lbfgs_v_queue[i].empty();
+			int n_node = getNumNodes(i);
+			Scalar* last_g = (Scalar*)&d_last_g[m_offsets[i]];
+			Scalar* gradient = (Scalar*)&d_g[m_offsets[i]];
+			Scalar* delta_v = (Scalar*)&d_delta_v[m_offsets[i]];
+
+			if (k == 0) // first iteration
+			{
+				m_lbfgs_g_queue[i].empty();
+				m_lbfgs_v_queue[i].empty();
+			}
+			else
+			{
+				CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &neg_one, last_g);
+				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &one, gradient, last_g);
+				m_lbfgs_g_queue[i].enqueue(last_g);
+			}
+			CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, gradient, last_g);
+
+			int size = m_lbfgs_g_queue[i].size();
+			std::vector<Scalar> pho(size);
+			std::vector<Scalar> zeta(size);
+
+			// first loop
+			for (int w = size - 1; w >= 0; --w)
+			{
+				const Scalar* s = m_lbfgs_v_queue[i][w];
+				const Scalar* t = m_lbfgs_g_queue[i][w];
+
+				CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, s, t, &pho[w]);
+				CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, s, gradient, &zeta[w]);
+				zeta[w] /= pho[w];
+
+				Scalar neg_zeta = -zeta[w];
+				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &neg_zeta, t, gradient);
+			}
+
+			// linear solve
+			timer.start();
+			m_solvers[i].cholSolve(gradient, delta_v);
+			std::cout << " cholSolve: " << timer.elapsedMilliseconds();
+
+			// second loop
+			for (int w = 0; w < size; ++w)
+			{
+				const Scalar* s = m_lbfgs_v_queue[i][w];
+				const Scalar* t = m_lbfgs_g_queue[i][w];
+
+				Scalar eta;
+				CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, t, delta_v, &eta);
+				eta = zeta[w] - eta / pho[w];
+				CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &eta, s, delta_v);
+			}
+
+			// line-search
+			CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &neg_one, delta_v);
+			if (m_enable_line_search) lineSearch(i, last_g, delta_v, m_step_size[i]);
+
+			CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v);
+			m_lbfgs_v_queue[i].enqueue(delta_v);
+			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &one, delta_v, (Scalar*)v_k);
+
+			Scalar res;
+			CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, last_g, &res);
+			if (sqrt(res) < 1e-6 || m_step_size[i] < 1e-6) converged[i] = true;
+			std::cout << "[cloth " << i << "] residual: " << sqrt(res) << " step_size: " << m_step_size[i];
 		}
-		else
-		{
-			CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &neg_one, last_g);
-			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &one, gradient, last_g);
-			m_lbfgs_g_queue[i].enqueue(last_g);
-		}
-		CublasCaller<Scalar>::copy(m_cublas_handle, 3 * n_node, gradient, last_g);
 
-		int size = m_lbfgs_g_queue[i].size();
-		std::vector<Scalar> pho(size);
-		std::vector<Scalar> zeta(size);
+		bool all_converged = true;
+		for (const auto& b_con : converged) all_converged = all_converged && b_con;
 
-		// first loop
-		for (int w = size - 1; w >= 0; --w)
-		{
-			const Scalar* s = m_lbfgs_v_queue[i][w];
-			const Scalar* t = m_lbfgs_g_queue[i][w];
-
-			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, s, t, &pho[w]);
-			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, s, gradient, &zeta[w]);
-			zeta[w] /= pho[w];
-
-			Scalar neg_zeta = -zeta[w];
-			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &neg_zeta, t, gradient);
-		}
-
-		// linear solve
-		timer.start();
-		m_solvers[i].cholSolve(gradient, delta_v, m_linear_solver_iterations, m_linear_solver_error);
-		std::cout << " cholSolve: " << timer.elapsedMilliseconds();
-
-		// second loop
-		for (int w = 0; w < size; ++w)
-		{
-			const Scalar* s = m_lbfgs_v_queue[i][w];
-			const Scalar* t = m_lbfgs_g_queue[i][w];
-
-			Scalar eta;
-			CublasCaller<Scalar>::dot(m_cublas_handle, 3 * n_node, t, delta_v, &eta);
-			eta = zeta[w] - eta / pho[w];
-			CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &eta, s, delta_v);
-		}
-
-		// line-search
-		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &neg_one, delta_v);
-		if (m_enable_line_search) lineSearch(i, last_g, delta_v, m_step_size[i]);
-
-		CublasCaller<Scalar>::scal(m_cublas_handle, 3 * n_node, &m_step_size[i], delta_v);
-		m_lbfgs_v_queue[i].enqueue(delta_v);
-		CublasCaller<Scalar>::axpy(m_cublas_handle, 3 * n_node, &one, delta_v, (Scalar*)v_k);
-
-		Scalar res;
-		CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * n_node, last_g, &res);
-		if (sqrt(res) < 1e-6 || m_step_size[i] < 1e-6) m_converged[i] = true;
-		std::cout << " residual: " << sqrt(res) << " step_size: " << m_step_size[i];
+		return all_converged;
 	}
 
-	void ClothSim::evaluateGradient(int i, const Vec3x* x, const Vec3x* v)
+	void ClothSim::evaluateGradient(const Vec3x* x_k, const Vec3x* v_k)
 	{
 		cudaMemset(d_g, 0, m_num_total_nodes * sizeof(Vec3x));
 
 		// Evaluates gradient of inner energy
-		Vec3x* g = &d_g[m_offsets[i]];
+		for (int i = 0; i < m_num_cloths; ++i)
+		{
+			const Vec3x* x = &x_k[m_offsets[i]];
+			Vec3x* g = &d_g[m_offsets[i]];
 
-		m_attachment_constraints[i].computeGradient(x, g);
-		m_stretching_constraints[i].computeGradient(x, g);
-		m_bending_constraints[i].computeGradiant(x, g);
+			m_attachment_constraints[i].computeGradient(x, g);
+			m_stretching_constraints[i].computeGradient(x, g);
+			m_bending_constraints[i].computeGradiant(x, g);
+		}
 
 		// \grad f = M * (v_t+1 - u) + h * \grad E(x_t + h * v_t+1)
 		computeGradientWithoutDampingKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> (
-			getNumNodes(i), m_dt, &d_mass[m_offsets[i]], v, &d_u[m_offsets[i]], g, g);
+			m_num_total_nodes, m_dt, d_mass, v_k, d_u, d_g, d_g);
+	}
+
+	template <typename Object>
+	__global__ void externalCollisionDetectionKernel(int n_node, Scalar h, const Vec3x* xt, const Vec3x* vk, Object obj, int* flags, ExternalCollisionInfo* infos)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n_node || flags[i]) return; // collid in previous iteration
+
+		ExternalCollisionInfo info;
+		info.idx = i;
+		if (!obj.collisionDetection(h, xt[i], vk[i], info)) return;
+
+		if (!flags[n_node + i + 1])
+		{
+			flags[i] = flags[n_node + i + 1] = 1;
+			infos[i] = info;
+		}
+		else if (info.hit_time < infos[i].hit_time)
+		{
+			infos[i] = info;
+		}
+	}
+
+	__global__ void compactExternalCollisionInfoKernel(int n_node, const int* flags, const int* dst_idx, const ExternalCollisionInfo* src, ExternalCollisionInfo* dst)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n_node) return;
+
+		if (flags[i]) dst[dst_idx[i]] = src[i];
+	}
+
+	__global__ void computeExternalCollisionImpulseKernel(int n_ext, Scalar mu, Scalar thickness, Scalar h, const Scalar* mass, 
+		const Vec3x* xt, const Vec3x* vk, const Vec3x* grad, const ExternalCollisionInfo* infos, Vec3x* r_ext)
+	{
+		int i = blockIdx.x * blockDim.x + threadIdx.x;
+		if (i >= n_ext) return;
+
+		ExternalCollisionInfo info = infos[i];
+		int idx = info.idx;
+		Vec3x target_vel = (info.hit_pos + thickness * info.normal - xt[idx]) / h + info.hit_vel;
+		Vec3x r = -grad[idx] + mass[idx] * (vk[idx] - target_vel);
+
+		Vec3x N = info.normal;
+		Scalar r_N = r.dot(N);
+		if (r_N < 0) 
+		{
+			Vec3x r_T = r - r_N * N;
+			r_N *= -1;
+			if (r_T.norm() < mu * r_N) r_ext[idx] = -r;
+			else r_ext[idx] = r_N * N - mu * r_N * r_T.normalized();
+		}
+	}
+
+	void ClothSim::PDComputeExternalCollisionImpulse(const Vec3x* x_t, const Vec3x* v_k)
+	{
+		// collision detection
+		//// the first half remembers if collid in previous iter (reset per step)
+		//// the second half remembers if collid with other objects (reset per iter)
+		cudaMemset(d_external_collision_flag + m_num_total_nodes + 1, 0, (m_num_total_nodes + 1) * sizeof(int)); // the second half
+		for (const auto& op : m_external_objects)
+		{
+			if (Sphere* sp = dynamic_cast<Sphere*>(op))
+			{
+				externalCollisionDetectionKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>>
+					(m_num_total_nodes, m_dt, x_t, v_k, *sp, d_external_collision_flag, d_external_collision_info);
+			}
+			else if (Plane* pp = dynamic_cast<Plane*>(op))
+			{
+				externalCollisionDetectionKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>>
+					(m_num_total_nodes, m_dt, x_t, v_k, *pp, d_external_collision_flag, d_external_collision_info);
+			}
+		}
+
+		// compact collision info
+		thrust::exclusive_scan(thrust::device, d_external_collision_flag, d_external_collision_flag + m_num_total_nodes + 1, d_external_collision_flag + m_num_total_nodes + 1);
+		int n_ext;
+		cudaMemcpy(&n_ext, d_external_collision_flag + 2 * m_num_total_nodes + 1, sizeof(int), cudaMemcpyDeviceToHost);
+		compactExternalCollisionInfoKernel <<< get_block_num(m_num_total_nodes), g_block_dim >>> 
+			(m_num_total_nodes, d_external_collision_flag, d_external_collision_flag + m_num_total_nodes + 1, d_external_collision_info, d_external_collision_info + m_num_total_nodes);
+		
+		// resolve collision
+		cudaMemset(d_r_ext, 0, m_num_total_nodes * sizeof(Vec3x));
+		computeExternalCollisionImpulseKernel <<< get_block_num(n_ext), g_block_dim >>>
+			(n_ext, m_external_mu, m_external_thichness, m_dt, d_mass, x_t, v_k, d_g, d_external_collision_info + m_num_total_nodes, d_r_ext);
+
+		if (n_ext > 0)
+		{
+			Scalar r_norm;
+			CublasCaller<Scalar>::nrm2(m_cublas_handle, 3 * m_num_handles, (Scalar*)d_r_ext, &r_norm);
+			std::cout << " N_ext: " << n_ext << " avg. r_ext: " << r_norm / n_ext;
+		}
 	}
 
 	const FaceIdx* ClothSim::getFaceIndices(int i) const

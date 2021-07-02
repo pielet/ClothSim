@@ -9,13 +9,24 @@ namespace cloth
 		return x * x;
 	}
 
-	//GLOBAL void vectorDot(int n, const Scalar* x, const Scalar* y, Scalar* z)
-	//{
-	//	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	//	if (i >= n) return;
+	INLINE CUDA_CALLABLE_MEMBER int solveQuadratic(Scalar a, Scalar b, Scalar c, Scalar& x1, Scalar& x2)
+	{
+		Scalar delta = b * b - 4 * a * c;
 
-	//	z[i] = x[i] * y[i];
-	//}
+		if (delta < 0) return 0;
+		else if (delta < EPS)
+		{
+			x1 = -b / (2 * a);
+			return 1;
+		}
+		else
+		{
+			Scalar sqrt_delta = sqrt(delta);
+			x1 = (-b + sqrt_delta) / (2 * a);
+			x2 = (-b - sqrt_delta) / (2 * a);
+			return 2;
+		}
+	}
 
 	// Compute (a^2 + b^2)^(1/2) without destructive underflow or overflow
 	INLINE CUDA_MEMBER Scalar pythag(Scalar a, Scalar b)

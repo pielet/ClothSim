@@ -404,9 +404,9 @@ namespace cloth
 		Ks[i](3) = -e0_inv_h1;
 
 		Scalar cos_rest_angle = n0.normalized().dot(n1.normalized());
-		flat_stiffness[i] = 6 * cos_rest_angle / (a0 + a1) * stiffness;
+		flat_stiffness[i] = 6 * cos_rest_angle / (a0 + a1) * stiffness * e0.norm();
 		Scalar triple_product = e0.cross(e1).dot(e2);
-		nonflat_stiffness[i] = -6 * e0_norm2 * e0_norm2 / ((a0 + a1) * a0 * a0 * a1 * a1) * triple_product * stiffness;
+		nonflat_stiffness[i] = -6 * e0_norm2 * e0_norm2 / ((a0 + a1) * a0 * a0 * a1 * a1) * triple_product * stiffness * e0.norm();
 	}
 
 	void BendingConstraints::initialize(int n_edges, const MaterialParameters* material, const EdgeIdx* indices, const Vec3x* x)

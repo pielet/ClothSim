@@ -96,6 +96,7 @@
   <ItemGroup>
     <CudaCompile Include="ClothSim.cu" />
     <CudaCompile Include="Constraints.cu" />
+    <CudaCompile Include="ExternalCollision.cu" />
     <CudaCompile Include="LinearSolver.cu" />
     <CudaCompile Include="SparseMatrix.cu" />
     <CudaCompile Include="Utils\MathUtility.cu" />
@@ -103,6 +104,7 @@
   <ItemGroup>
     <ClInclude Include="ClothSim.h" />
     <ClInclude Include="Constraints.h" />
+    <ClInclude Include="ExternalCollision.h" />
     <ClInclude Include="json\json-forwards.h" />
     <ClInclude Include="json\json.h" />
     <ClInclude Include="LinearSolver.h" />
