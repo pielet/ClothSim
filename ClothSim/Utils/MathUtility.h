@@ -32,7 +32,7 @@ namespace cloth
 	INLINE CUDA_MEMBER Scalar pythag(Scalar a, Scalar b)
 	{
 		Scalar absa = fabs(a), absb = fabs(b);
-		return (absa > absb ? absa * sqrt(1.0 + square(absb / absa)) :
+		return (absa > absb ? absa * sqrt(1.0f + square(absb / absa)) :
 			(absb == 0.0f ? 0.0f : absb * sqrt(1.0f + square(absa / absb))));
 	}
 

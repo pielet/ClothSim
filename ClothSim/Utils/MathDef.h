@@ -86,6 +86,7 @@ namespace cloth
 		CUDA_CALLABLE_MEMBER Vec<T, n>& operator/=(T a);
 
 		CUDA_CALLABLE_MEMBER void setZero();
+		CUDA_CALLABLE_MEMBER void normalize();
 		CUDA_CALLABLE_MEMBER T sum() const;
 		CUDA_CALLABLE_MEMBER T squareNorm() const;
 		CUDA_CALLABLE_MEMBER T norm() const;
@@ -294,6 +295,12 @@ namespace cloth
 	{
 #pragma unroll
 		for (int i = 0; i < n; ++i) value[i] = 0;
+	}
+
+	template <typename T, int n>
+	CUDA_CALLABLE_MEMBER void Vec<T, n>::normalize()
+	{
+		*this /= norm();
 	}
 
 	template <typename T, int n>

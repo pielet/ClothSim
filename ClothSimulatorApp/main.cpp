@@ -154,24 +154,6 @@ void simulation()
 
 int main(int argc, char** argv)
 {
-	// svd test
-	//cloth::Mat3x U, V;
-	//cloth::Vec3x S;
-	//U.setRow(0, cloth::Vec3x(-0.7922, -0.0357, -0.6787));
-	//U.setRow(1, cloth::Vec3x(-0.9595, -0.8491, -0.7577));
-	//U.setRow(2, cloth::Vec3x(-0.6557, -0.9340, -0.7431));
-
-	//U.print();
-	//V.print();
-	//S.print();
-	//std::cout << "\n\n";
-
-	//cloth::SVDdecomp(U, V, S);
-
-	//U.print();
-	//V.print();
-	//S.print();
-
 	// glut
 	glutInit(&argc, argv);
 	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
@@ -200,7 +182,15 @@ int main(int argc, char** argv)
 	g_shader = new Shader("Render/shader.vs", "Render/shader.fs");
 	g_camera = new Camera(g_window_width, g_window_height);
 	g_cloth = new cloth::ClothSim();
-	g_cloth->initialize("../config/scene.json");
+	try
+	{
+		g_cloth->initialize("../config/scene.json");
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << e.what();
+		return -1;
+	}
 	g_renderer = new ClothRenderer(g_cloth->getNumTotalNodes(), g_cloth->getNumTotalFaces(), g_cloth);
 
 	std::thread sim(simulation);

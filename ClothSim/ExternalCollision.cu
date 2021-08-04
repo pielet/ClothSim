@@ -4,21 +4,12 @@
 namespace cloth
 {
 	ExternalObject::ExternalObject(const Vec3x& origin) 
-		: m_origin(origin), m_velocity(0.f, 0.f, 0.f)
+		: m_origin(origin), m_next_origin(origin), m_velocity(0.f, 0.f, 0.f), m_angular_velocity(0.f, 0.f, 0.f),
+		m_activate(true), m_group_idx(0)
 	{ }
 
-	void ExternalObject::setVelocity(const Vec3x& vel)
-	{
-		m_velocity = vel;
-	}
-
-	void ExternalObject::update(Scalar h)
-	{
-		m_origin += m_velocity * h;
-	}
-
 	Sphere::Sphere(const Vec3x& origin, Scalar radius)
-		: ExternalObject(origin), m_radius(radius), m_angular_velocity(0.f, 0.f, 0.f)
+		: ExternalObject(origin), m_radius(radius)
 	{ }
 
 	CUDA_CALLABLE_MEMBER bool Sphere::collisionDetection(Scalar h, const Vec3x& x, const Vec3x& v, ExternalCollisionInfo& info)
@@ -38,8 +29,9 @@ namespace cloth
 
 		info.hit_time = t;
 		info.hit_pos = x + t * v;
-		info.normal = (info.hit_pos - m_origin).normalized();
-		info.hit_vel = m_velocity + m_angular_velocity.cross(info.hit_pos - m_origin);
+		Vec3x hit_origin = m_origin + t * m_velocity;
+		info.normal = (info.hit_pos - hit_origin).normalized();
+		info.hit_vel = m_velocity + m_angular_velocity.cross(info.hit_pos - hit_origin);
 
 		return true;
 	}

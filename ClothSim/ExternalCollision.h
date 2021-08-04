@@ -19,14 +19,12 @@ namespace cloth
 		ExternalObject(const Vec3x& origin);
 		virtual ~ExternalObject() = default;
 
-		//! Update velocities according to selected motion script
-		virtual void setVelocity(const Vec3x& vel);
-		//! Update origin
-		virtual inline void update(Scalar h);
-
-	protected:
-		Vec3x m_origin;
+		Vec3x m_origin; //< use this to do CCD
+		Vec3x m_next_origin; //< use this
 		Vec3x m_velocity;
+		Vec3x m_angular_velocity;
+
+		bool m_activate;
 
 		int m_group_idx;
 	};
@@ -38,15 +36,12 @@ namespace cloth
 		Sphere(const Vec3x& origin, Scalar radius);
 		virtual ~Sphere() = default;
 
-		//virtual void setVelocity(const Vec3x& vel);
-
 		//! Perform CCD of point and sphere
 		//! Assume *this will be passed by value to kernel functions
 		CUDA_CALLABLE_MEMBER bool collisionDetection(Scalar h, const Vec3x& x, const Vec3x& v, ExternalCollisionInfo& info);
 
 	protected:
 		Scalar m_radius;
-		Vec3x m_angular_velocity;
 	};
 
 	
@@ -55,8 +50,6 @@ namespace cloth
 	public:
 		Plane(const Vec3x& origin, const Vec3x& dir);
 		virtual ~Plane() = default;
-
-		//virtual void setVelocity(const Vec3x& vel);
 
 		//! Perform CCD of point and plane
 		//! Assume *this will be passed by value to kernel functions

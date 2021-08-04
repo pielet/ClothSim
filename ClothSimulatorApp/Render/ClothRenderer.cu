@@ -2,7 +2,7 @@
 #include <vector>
 #include <iostream>
 #include <cuda_gl_interop.h>
-#include "../Render/Shader.h"
+#include "Shader.h"
 #include "../../ClothSim/Utils/MathDef.h"
 #include "../../ClothSim/ClothSim.h"
 

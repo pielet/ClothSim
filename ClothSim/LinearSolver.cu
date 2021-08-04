@@ -415,7 +415,7 @@ namespace cloth
 			CublasCaller<Scalar>::axpy(m_cublasHandle, m_n, &one, d_z, d_p);
 		}
 
-		std::cout << "Total CG iteration: " << k << " residual: " << res;
+		std::cout << "CG iter: " << k << " res: " << res;
 
 		return true;
 	}

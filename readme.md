@@ -34,12 +34,14 @@ Collision:
 * [x] **definiteness fix for stretching energy hessian**
 * [x] regularization for near singular hessian matrix
 * [ ] replace `chol` with `cusolverRf` in Newton's method
-* [ ] **handle update and motion scripts**
+* [x] **handle update and motion scripts**
 * [ ] output and checkpoint
 * [ ] **Neo-Hookean model**
 * [x] **Projective Dynamics**
 * [x] L-BFGS
 * [x] collision detection & handling (implicit sphere & plane)
+* [ ] implicit geometry visualization
+* [ ] spring collision (for Newton and L-BFGS)
 
 ## Problems
 

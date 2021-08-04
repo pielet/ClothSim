@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 #include <list>
+#include <unordered_set>
 
 #include "Utils/MathDef.h"
 #include "Utils/json_loader.h"
@@ -86,46 +87,41 @@ namespace cloth
 
 	struct HandleGroup
 	{
-		std::vector<int> m_indices;
-		std::vector<Vec3x> m_targets;
-
-		Vec3x m_center;
-
 		int m_num_nodes;
 		int m_cloth_idx;
+		std::vector<int> m_indices;
+		std::vector<Vec3x> m_targets;
+		Vec3x m_center;
 
 		bool m_activate;
+
+		int m_group_idx;
 
 		HandleGroup(Json::Value& json, const std::vector<Cloth>& cloths);
 	};
 
-	//struct MotionScript
-	//{
-	//	//enum Type
-	//	//{
-	//	//	MOTION_TYPE_TRANSLATE,
-	//	//	MOTION_TYPE_ROTATE,
-	//	//	MOTION_TYPE_DELETE,
+	struct MotionScript
+	{
+		enum Type
+		{
+			MOTION_TYPE_TRANSLATE,
+			MOTION_TYPE_ROTATE,
+			MOTION_TYPE_DELETE,
 
-	//	//	MOTION_TYPE_COUNT
-	//	//};
+			MOTION_TYPE_COUNT
+		};
 
-	//	//Type m_type;
+		Type m_type;
 
-	//	Scalar m_begin;
-	//	Scalar m_end;
-	//	//Vec3x m_origin;
-	//	//Eigen::Vec3x m_axis;
-	//	Scalar m_amount; //< total distance or angle
+		Scalar m_begin;
+		Scalar m_end;
+		Vec3x m_axis;
+		Scalar m_amount; //< total distance or angle
 
-	//	Scalar m_ease_begin;
-	//	Scalar m_ease_end;
+		int m_group_idx;
 
-	//	HandleGroup* m_handle;
-
-	//	MotionScript(Json::Value& json, std::vector<HandleGroup>& handles);
-	//	void update(Scalar current_time, Scalar dt);
-	//};
+		MotionScript(Json::Value& json);
+	};
 
 	class /*EXPORT*/ ClothSim
 	{
@@ -161,6 +157,8 @@ namespace cloth
 	private:
 		void loadScene(const std::string& fname);
 
+		void scripting();
+
 		bool NewtonStep(Vec3x* v_k, const Vec3x* x_k);
 		bool PDStep(Vec3x* v_k, const Vec3x* x_k);
 		bool LBFGSStep(int k, Vec3x* v_k, const Vec3x* x_k);
@@ -185,8 +183,9 @@ namespace cloth
 		Scalar m_ls_beta;
 
 		LinearSolverType m_linear_solver_type;
-		int m_linear_solver_iterations;
-		Scalar m_linear_solver_error;
+		LinearSolver::PrecondT m_cg_precond;
+		Scalar m_cg_iteration_ratio;
+		Scalar m_cg_error;
 
 		Vec3x m_gravity;
 		bool m_enable_damping;
@@ -202,7 +201,6 @@ namespace cloth
 		int m_num_total_nodes;
 		int m_num_total_faces;
 		int m_num_total_egdes;
-		int m_num_handles;
 
 		//! States
 		Vec3x* d_x;
@@ -246,7 +244,9 @@ namespace cloth
 
 		//! Animation
 		std::vector<HandleGroup> m_handle_groups;
-		//std::vector<MotionScript> m_motion_scripts;
+		std::vector<MotionScript> m_motion_scripts;
+		int m_num_fixed;
+		std::unordered_set<int> m_group_idx;
 
 		//! CUDA handles
 		cublasHandle_t m_cublas_handle;
