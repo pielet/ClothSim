@@ -20,7 +20,6 @@ namespace cloth
 		virtual ~ExternalObject() = default;
 
 		Vec3x m_origin; //< use this to do CCD
-		Vec3x m_next_origin; //< use this
 		Vec3x m_velocity;
 		Vec3x m_angular_velocity;
 
@@ -40,7 +39,6 @@ namespace cloth
 		//! Assume *this will be passed by value to kernel functions
 		CUDA_CALLABLE_MEMBER bool collisionDetection(Scalar h, const Vec3x& x, const Vec3x& v, ExternalCollisionInfo& info);
 
-	protected:
 		Scalar m_radius;
 	};
 
@@ -55,7 +53,6 @@ namespace cloth
 		//! Assume *this will be passed by value to kernel functions
 		CUDA_CALLABLE_MEMBER bool collisionDetection(Scalar h, const Vec3x& x, const Vec3x& v, ExternalCollisionInfo& info);
 
-	protected:
 		Vec3x m_direction;
 	};
 }

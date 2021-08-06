@@ -18,6 +18,7 @@ public:
 	void setInt(const std::string& name, int value) const;
 	void setFloat(const std::string& name, float value) const;
 	void setVec4f(const std::string& name, float x, float y, float z, float w) const;
+	void setVec4f(const std::string& name, const Vec3f& color, float alpha) const;
 	void setMat4f(const std::string& name, const Mat4f& value) const;
 
 private:

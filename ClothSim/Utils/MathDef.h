@@ -688,6 +688,8 @@ namespace cloth
 	typedef Vec<int, 3> FaceIdx;
 	typedef Vec<int, 4> EdgeIdx;
 
+	typedef Vec<float, 3> Vec3f;
+
 	typedef Vec<Scalar, 2> Vec2x;
 	typedef Vec<Scalar, 3> Vec3x;
 	typedef Vec<Scalar, 4> Vec4x;

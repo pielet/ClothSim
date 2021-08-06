@@ -145,6 +145,7 @@ namespace cloth
 		void output() const;
 
 		//! Access counting
+		Scalar getDt() const;
 		int getOffset(int i) const;
 		int getNumCloths() const;
 		int getNumNodes(int i) const;
@@ -153,6 +154,7 @@ namespace cloth
 		int getNumTotalNodes() const;
 		int getNumTotalFaces() const;
 		int getNumTotalEdges() const;
+		const std::vector<ExternalObject*>& getExternalObjects() const;
 
 	private:
 		void loadScene(const std::string& fname);

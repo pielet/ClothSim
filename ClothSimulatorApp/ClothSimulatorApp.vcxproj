@@ -93,13 +93,15 @@
     <ClCompile Include="Render\Shader.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Utility.h" />
+    <ClInclude Include="Render\ExternalObjectRender.h" />
     <ClInclude Include="Render\Camera.h" />
     <ClInclude Include="Render\Shader.h" />
     <ClInclude Include="Render\ClothRenderer.h" />
+    <ClInclude Include="Utility.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="Render\ClothRenderer.cu" />
+    <CudaCompile Include="Render\ExternalObjectRender.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -57,13 +57,13 @@
 		"group": 0
 	}],
 	"objects":[
-		{"type": "sphere", "origin": [0.5, -0.5, 0.5], "radius": 0.5, "group": 1}
-		//{"type": "plane", "origin": [0, -0.5, 0], "dir": [0, 1, 0], "group": 1}
+		//{"type": "sphere", "origin": [0.5, -0.5, 0.5], "radius": 0.5, "group": 1}
+		{"type": "plane", "origin": [0, -0.5, 0], "dir": [0, 1, 0], "group": 1}
 	],
 	"motions":[
-		//{"type": "translate", "begin": 0, "end": 0.5, "direction": [0, 0, -1], "distance": 2, "group": 1}
-		{"type": "rotate", "begin": 0, "end": 1.0, "axis": [0, 1, 0], "angle": 180/*degree*/, "group": 1} // default origin is object center
-		//{"type": "delete", "begin": 10, "end": 1.0, "group": 1}
+		{"type": "translate", "begin": 0, "end": 0.5, "direction": [0, 0, -1], "distance": 2, "group": 1},
+		//{"type": "rotate", "begin": 0, "end": 0.5, "axis": [1, 0, 0], "angle": -180/*degree*/, "group": 1}, // default origin is object center
+		{"type": "delete", "begin": 0.5, "end": 1.0, "group": 1}
 	],
 
 	"gravity": [0, -981, 0],

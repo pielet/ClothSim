@@ -4,7 +4,7 @@
 namespace cloth
 {
 	ExternalObject::ExternalObject(const Vec3x& origin) 
-		: m_origin(origin), m_next_origin(origin), m_velocity(0.f, 0.f, 0.f), m_angular_velocity(0.f, 0.f, 0.f),
+		: m_origin(origin), m_velocity(0.f, 0.f, 0.f), m_angular_velocity(0.f, 0.f, 0.f),
 		m_activate(true), m_group_idx(0)
 	{ }
 

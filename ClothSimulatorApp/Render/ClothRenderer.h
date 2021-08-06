@@ -4,33 +4,43 @@
 #include <vector>
 #include <GL/glew.h>
 #include <cuda_runtime.h>
+#include "../../ClothSim/Utils/MathDef.h"
+#include "../../ClothSim/ClothSim.h"
+#include "ExternalObjectRender.h"
 
 class Shader;
-namespace cloth { class ClothSim; }
 
-class ClothRenderer
+namespace cloth
 {
-public:
-	ClothRenderer(int num_nodes, int num_faces, const cloth::ClothSim* cloth_sim);
-	~ClothRenderer();
+	class ClothRenderer
+	{
+	public:
+		ClothRenderer(const ClothSim* cloth_sim);
+		~ClothRenderer();
 
-	void draw(const Shader* shader);
-	void ackGeometryChange() { m_geometryChanged = true; }
+		void draw(const Shader* shader);
+		void ackGeometryChange() { m_geometryChanged = true; }
 
-protected:
-	void updateVertices();
+	protected:
+		void updateVertices();
 
-	int m_num_nodes;
-	int m_num_faces;
+		int m_num_nodes;
+		int m_num_faces;
 
-	const cloth::ClothSim* m_sim;
+		Eigen::Vec3f m_face_color;
+		Eigen::Vec3f m_frame_color;
 
-	bool m_geometryChanged;
+		const ClothSim* m_sim;
 
-	GLuint m_verticesBuffer;
-	GLuint m_indicesBuffer;
+		std::vector<ExternalObjectRender*> m_external_renders;
 
-	struct cudaGraphicsResource* m_cudaResource;
-};
+		bool m_geometryChanged;
+
+		GLuint m_verticesBuffer;
+		GLuint m_indicesBuffer;
+
+		struct cudaGraphicsResource* m_cudaResource;
+	};
+}
 
 #endif // !CLOTH_RENDERER_H

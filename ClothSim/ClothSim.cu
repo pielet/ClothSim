@@ -481,8 +481,8 @@ namespace cloth
 
 	Scalar cubic_ease_function(const Scalar& t, const Scalar& t0, const Scalar& t1, const Scalar& ta, const Scalar& tb, const Scalar& L)
 	{
-		Scalar yh = (L * 2.0) / (t1 - t0 + tb - ta);
-		if (t < t0 || t > t1) return 0.0;
+		Scalar yh = (L * 2.0f) / (t1 - t0 + tb - ta);
+		if (t < t0 || t > t1) return 0.0f;
 		else {
 			if (t < ta) return (yh * (t0 - t) * (t0 - t) * (t0 - 3.0 * ta + 2.0 * t)) / ((t0 - ta) * (t0 - ta) * (t0 - ta));
 			else if (t > tb) return (yh * (t1 - t) * (t1 - t) * (t1 - 3.0 * tb + 2.0 * t)) / ((t1 - tb) * (t1 - tb) * (t1 - tb));
@@ -710,7 +710,7 @@ namespace cloth
 			}
 			else
 			{
-				m_solvers[i].conjugateGradient(gradient, delta_v, 3 * n_node * m_cg_iteration_ratio, m_cg_error);
+				m_solvers[i].conjugateGradient(gradient, delta_v, int(3 * n_node * m_cg_iteration_ratio), m_cg_error);
 			}
 
 			Scalar minus_one = -1;
@@ -902,7 +902,7 @@ namespace cloth
 	bool ClothSim::PDStep(Vec3x* v_k, const Vec3x* x_k)
 	{
 		EventTimer timer;
-		Scalar one = 1.0f, neg_one = -1.0f;
+		Scalar neg_one = -1.0f;
 
 		timer.start();
 		evaluateGradient(x_k, v_k);
@@ -1150,6 +1150,11 @@ namespace cloth
 		return d_x;
 	}
 
+	Scalar ClothSim::getDt() const
+	{
+		return m_dt;
+	}
+
 	int ClothSim::getOffset(int i) const
 	{
 		return m_offsets[i];
@@ -1188,5 +1193,10 @@ namespace cloth
 	int ClothSim::getNumTotalEdges() const
 	{
 		return m_num_total_egdes;
+	}
+
+	const std::vector<ExternalObject*>& ClothSim::getExternalObjects() const
+	{
+		return m_external_objects;
 	}
 }

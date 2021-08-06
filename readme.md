@@ -40,7 +40,7 @@ Collision:
 * [x] **Projective Dynamics**
 * [x] L-BFGS
 * [x] collision detection & handling (implicit sphere & plane)
-* [ ] implicit geometry visualization
+* [x] implicit geometry visualization
 * [ ] spring collision (for Newton and L-BFGS)
 
 ## Problems

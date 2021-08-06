@@ -11,6 +11,7 @@ const float M_PI = 3.141592653589793238462643383279f;
 typedef Eigen::Matrix<float, 3, 3> Mat3f;
 typedef Eigen::Matrix<float, 4, 4> Mat4f;
 typedef Eigen::Matrix<float, 3, 1> Vec3f;
+typedef Eigen::Matrix<float, 4, 1> Vec4f;
 
 class Timer
 {

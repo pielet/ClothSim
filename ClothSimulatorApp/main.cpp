@@ -6,12 +6,11 @@
 #include <sstream>
 #include <thread>
 
+#include "Utility.h"
 #include "Render/Camera.h"
 #include "Render/Shader.h"
 #include "Render/ClothRenderer.h"
 #include "../ClothSim/ClothSim.h"
-#include "../ClothSim/Utils/MathDef.h"
-#include "../ClothSim/Utils/MathUtility.h"
 
 // parameters
 int g_window_width = 800;
@@ -22,7 +21,7 @@ int frame_count = 0;
 
 Shader* g_shader;
 Camera* g_camera;
-ClothRenderer* g_renderer;
+cloth::ClothRenderer* g_renderer;
 cloth::ClothSim* g_cloth;
 
 bool g_exit = false;
@@ -191,7 +190,7 @@ int main(int argc, char** argv)
 		std::cerr << e.what();
 		return -1;
 	}
-	g_renderer = new ClothRenderer(g_cloth->getNumTotalNodes(), g_cloth->getNumTotalFaces(), g_cloth);
+	g_renderer = new cloth::ClothRenderer(g_cloth);
 
 	std::thread sim(simulation);
 	glutMainLoop();

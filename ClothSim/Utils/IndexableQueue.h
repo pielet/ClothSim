@@ -50,7 +50,7 @@ namespace cloth
 			return m_queue[(m_start + i) % m_capacity];
 		}
 
-		const int size() const { return m_size; }
+		int size() const { return m_size; }
 
 	protected:
 		std::vector<ScalarT*> m_queue;
